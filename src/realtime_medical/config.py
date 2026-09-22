@@ -130,9 +130,7 @@ class TriageRulesConfig(BaseModel):
 class ModelConfig(BaseModel):
     path: str
     evaluation_metric: str
-    input_features: List[str]
     prediction_horizon_seconds: int 
-    missing_feature_strategy: str
     
     
 # AppConfig

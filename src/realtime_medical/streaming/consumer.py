@@ -20,9 +20,11 @@
 import json
 import logging
 import time
+from datetime import datetime
 from confluent_kafka import Consumer, KafkaError
 from src.realtime_medical.config import AppConfig
 from src.realtime_medical.db.client import DataBaseClient
+from src.realtime_medical.streaming.windowing import FeatureBuilder, StaticFeatureStore, WindowAggregator
 from src.realtime_medical.triage.rules import RuleEngine
 from src.realtime_medical.triage.trigger_model import MLTriageModel
 logger = logging.getLogger(__name__)
@@ -44,6 +46,9 @@ class VitalsConsumer:
         self.db_client= DataBaseClient(config)
         self.rule_engine = RuleEngine(config.triage_rules)
         self.ml_model = MLTriageModel(config.model)  
+        self.feature_builder = FeatureBuilder(
+            WindowAggregator(config.streaming), StaticFeatureStore(self.db_client)
+        )
         
         self.batch_size = config.streaming.batch_size
         self.flush_interval = config.streaming.window_size_seconds
@@ -149,22 +154,34 @@ class VitalsConsumer:
                     
                     self._vitals_buffer.append((surgery_id, vitals_data))
 
-                    # 2. This is where we will plug in the triage logic
+                    # Rules use each reading; ML uses the configured streaming window.
                     risk_level, rule_reasons = self.rule_engine.evaluate(vitals_data)
-                    ml_score= self.ml_model.predict_risk(vitals_data)
+                    ml_score = None
+                    try:
+                        recorded_at = datetime.fromisoformat(
+                            vitals_data["recorded_at"].replace("Z", "+00:00")
+                        ).timestamp()
+                        features = self.feature_builder.process_reading(
+                            surgery_id, vitals_data, timestamp=recorded_at
+                        )
+                        if features is not None:
+                            ml_score = self.ml_model.predict_risk(features)
+                    except Exception:
+                        logger.exception("ML feature extraction or prediction failed for surgery_id=%s", surgery_id)
 
                     # Decided whether or not to create an alert
-                    if risk_level == "CRITICAL" or self.ml_model.is_alert_required(ml_score):
+                    ml_alert = ml_score is not None and self.ml_model.is_alert_required(ml_score)
+                    if risk_level == "CRITICAL" or ml_alert:
                         alert_reason = " | ".join(rule_reasons)
-                        if self.ml_model.is_alert_required(ml_score):
-                            alert_reason += f"[ML Score warning: {ml_score:.2f}]"
+                        if ml_alert:
+                            alert_reason = " | ".join(filter(None, [alert_reason, f"ML Score warning: {ml_score:.2f}"]))
 
                         logger.warning(f"Risk Detected [surgery_id = {surgery_id}, patient_id = {patient_id}]:{alert_reason}]")
 
                         self._alerts_buffer.append({
                             "surgery_id": surgery_id,
                             "recorded_at": vitals_data["recorded_at"],
-                            "risk_level": risk_level,
+                            "risk_level": risk_level if risk_level == "CRITICAL" else "MEDIUM",
                             "model_score": ml_score,
                             "alert_reason": alert_reason,
                         })

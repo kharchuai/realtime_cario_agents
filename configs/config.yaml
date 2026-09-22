@@ -97,19 +97,10 @@ triage_rules:
       description: "HR/ SBP > 0.9 shocking suggestion"
       condition: "hr/ sbp > 0.9"
       threshold: 0.9
-# 6. Model - input_features use canonical
+# 6. Model - feature order and imputation are stored in the trained .pkl bundle
 
 model:
   path: "models/heart_disease_classifier.pkl"
   prediction_horizon_seconds: 60
   evaluation_metric: "recall"
-  input_features:
-    - "hr"
-    - "spo2"
-    - "sbp"
-    - "dbp"
-    - "mbp"
-    - "rr"
-    - "bt"
-  missing_feature_strategy: "impute_median"
 

@@ -1,0 +1,72 @@
+# =============================================================
+# docker-compose.yml — Hạ tầng cho hệ thống xử lý dữ liệu y tế
+# realtime (Medical Realtime System)
+#
+# File này dựng và kết nối 3 service chính:
+#
+# 1. postgres      : Database chính (PostgreSQL 15), lưu trữ dữ liệu
+#                     y tế. Tự động chạy các file .sql trong thư mục
+#                     ./db khi container được tạo lần đầu để khởi
+#                     tạo schema.
+#
+# 2. zookeeper      : Service coordination bắt buộc cho Kafka
+#                     (quản lý metadata, config của cluster).
+#
+# 3. kafka          : Message broker, nhận và phân phối dữ liệu
+#                     y tế theo thời gian thực giữa các service
+#                     (producer/consumer). Truy cập nội bộ qua
+#                     kafka:29092, truy cập từ máy host qua
+#                     localhost:9092.
+#
+# Dữ liệu của postgres và kafka được lưu bền vững qua Docker
+# volumes (pg_data, kafka_data) để không bị mất khi container
+# bị xoá hoặc restart.
+# =============================================================
+services:
+    postgres:
+        image: postgres:15
+        container_name: medical_postgres
+        environment:
+            POSTGRES_USER: ${POSTGRES_USER:-postgres}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1504}
+            POSTGRES_DB: ${POSTGRES_DB:-medical_realtime}
+        ports:
+            - "5432:5432"
+        volumes:
+            - pg_data:/var/lib/postgresql/data 
+            # Automatic run file schema.sql when create database first time
+            - ./db:/docker-entrypoint-initdb.d
+        restart: unless-stopped
+
+    zookeeper:
+        image: confluentinc/cp-zookeeper:7.5.0
+        container_name: medical_zookeeper
+        environment:
+            ZOOKEEPER_CLIENT_PORT: 2181
+            ZOOKEEPER_TICK_TIME: 2000
+        ports:
+            - "2181:2181"
+        restart: unless-stopped
+
+    kafka:
+        image: confluentinc/cp-kafka:7.5.0
+        container_name: medical_kafka
+        volumes:
+            - kafka_data:/var/lib/kafka/data
+        depends_on:
+            - zookeeper
+        ports:
+            - "9092:9092"
+        environment:
+            KAFKA_BROKER_ID: 1
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+            KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 
+            # Automatic create topic if not have
+            KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+        restart: unless-stopped
+volumes:
+    pg_data:
+    kafka_data:

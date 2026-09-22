@@ -1,0 +1,13 @@
+# Streaming & Database 
+confluent-kafka==2.3.0
+psycopg2-binary==2.9.9
+SQLAlchemy==2.0.25
+
+# Configuration & Utilities
+pydantic==2.5.3
+pydantic-settings==2.1.0
+PyYAML==6.0.1
+
+# Data Science & Machine leaning
+pandas==2.1.4
+scikit-learn==1.3.2

@@ -1,0 +1,115 @@
+# =========================================================================
+# MỤC ĐÍCH FILE
+# - Thiết lập ngưỡng cảnh báo (triage_rules) cho các chỉ số sinh tồn.
+# - Khi 1 chỉ số vượt ngưỡng, hệ thống gửi cảnh báo (alert) tới bác sĩ trực.
+# - Toàn bộ dữ liệu vitals + nhãn cảnh báo được lưu vào DB (vitals_stream)
+#   và có thể dùng làm dữ liệu huấn luyện lại model (model.path) sau này.
+#
+# GIỚI HẠN HIỆN TẠI
+# - Ngưỡng trong file này là ngưỡng CHUNG (population-level), áp dụng
+#   như nhau cho mọi bệnh nhân.
+# - Trên thực tế lâm sàng, ngưỡng "bình thường" khác nhau tùy bệnh nhân
+#   (tuổi, bệnh nền, thuốc đang dùng...). Hệ thống hiện CHƯA hỗ trợ
+#   ngưỡng cá nhân hóa (per-patient threshold) — đây là hướng mở rộng
+#   trong tương lai (VD: thêm bảng patient_thresholds override triage_rules).
+# =========================================================================
+# Project name
+project_name:  "realtime-medical-monitoring"
+
+# 1. Explain of specialization name :  code name
+canonical_fields:
+  heart_rate: "hr"
+  spo2: "spo2"
+  systolic_bp: "sbp"
+  diastolic_bp: "dbp"
+  mean_bp: "mbp"
+  respiratory_rate: "rr"
+  body_temp: "bt"
+
+  # 2. Mapping data file csv -> canonical
+source_mapping:
+  vendor: "solar8000"
+  fields:
+    "Solar8000/HR": "hr"
+    "Solar8000/PLETH_SPO2": "spo2"
+    "Solar8000/NIBP_SBP": "sbp"
+    "Solar8000/NIBP_DBP": "dbp"
+    "Solar8000/NIBP_MBP": "mbp"
+    "Solar8000/RR": "rr"
+    "Solar8000/BT": "bt"
+  # 3. steaming information
+streaming:
+  window_size_seconds: 60         # Data aggregation time window
+  evaluate_every_seconds: 5
+  min_samples_to_evaluate: 5
+  batch_size: 100                 # Number of records per batch
+  sampling_rate_seconds: 1
+  aggregate_by: "time_window"
+  missing_data:
+    max_gap_seconds: 10
+    interpolation: "forward_fill"
+    signal_loss_alert: true 
+  artifact_filtering:
+    hr:
+      valid_min: 25
+      valid_max: 250
+    rr:
+      valid_min: 4
+      valid_max: 60
+    bt: 
+      valid_min: 30.0 
+      valid_max: 42.0
+# 4. Database schema of streaming
+database:
+  table: "vital_signs"
+  columns:
+  - surgery_id
+  - recorded_at
+  - time_sec
+  - hr
+  - spo2
+  - sbp
+  - dbp
+  - mbp
+  - rr
+  - bt
+# 5. Triage rules - canonical 
+triage_rules:
+  heart_rate:
+    high: 120
+    low: 50
+  spo2:
+    critical: 92
+  blood_pressure:
+    sbp_high: 180
+    sbp_low: 80
+    dbp_high: 120
+    dbp_low: 40
+    mbp_low: 65
+  respiratory_rate:
+    high: 24
+    low: 8
+  body_temperature:
+    high: 38.5
+    low: 35
+  combined_rules:
+    - name: "shock_index_warning"
+      description: "HR/ SBP > 0.9 shocking suggestion"
+      condition: "hr/ sbp > 0.9"
+      threshold: 0.9
+# 6. Model - input_features use canonical
+
+model:
+  path: "models/heart_disease_classifier.pkl"
+  prediction_horizon_seconds: 60
+  evaluation_metric: "recall"
+  input_features:
+    - "hr"
+    - "spo2"
+    - "sbp"
+    - "dbp"
+    - "mbp"
+    - "rr"
+    - "bt"
+  missing_feature_strategy: "impute_median"
+

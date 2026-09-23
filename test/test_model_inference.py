@@ -3,6 +3,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import joblib
 import pandas as pd
 
 from src.realtime_medical.config import AppConfig, BASE_DIR
@@ -20,8 +21,14 @@ class ModelInferenceTests(unittest.TestCase):
             pd.DataFrame([row[model.input_features]])
         )[0][1]
         actual = model.predict_risk(row.to_dict())
+        bundle_info = json.loads(
+            (BASE_DIR / "models/model_bundle_info.json").read_text(encoding="utf-8")
+        )
+        saved_bundle = joblib.load(BASE_DIR / config.model.path)
 
         self.assertEqual(len(model.input_features), 24)
+        self.assertEqual(bundle_info["feature_order"], model.input_features)
+        self.assertEqual(bundle_info["metadata"], saved_bundle["metadata"])
         self.assertAlmostEqual(actual, expected)
 
     def test_consumer_scores_window_features_and_keeps_immediate_rules(self):
@@ -38,7 +45,9 @@ class ModelInferenceTests(unittest.TestCase):
                 return json.dumps(self.payload).encode("utf-8")
 
         class Kafka:
-            def __init__(self, _):
+            def __init__(self, config):
+                if config.get("group.id") != "medical-triage-group":
+                    raise AssertionError("Kafka consumer requires group.id")
                 start = datetime(2026, 9, 22, 10, 0, 0)
                 self.messages = [
                     Message({

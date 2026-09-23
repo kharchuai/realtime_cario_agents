@@ -155,7 +155,8 @@ class AppConfig(BaseSettings):
     postgres_user: str = "postgres"
     postgres_password:  str = ""
     postgres_host: str = "localhost"
-    postgres_port: str = "5432"
+    # Docker publishes PostgreSQL's internal 5432 port on host port 5433.
+    postgres_port: str = "5433"
     postgres_db: str = "medical_realtime"
 
     @property

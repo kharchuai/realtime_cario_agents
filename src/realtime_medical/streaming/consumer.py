@@ -34,7 +34,7 @@ class VitalsConsumer:
         # Group consumer (Consumer Group) to avoid duplicate data reading 
         conf ={
             'bootstrap.servers':config.kafka_broker_url,
-            'group_id': 'medical-triage-group',
+            'group.id': 'medical-triage-group',
             'auto.offset.reset': 'latest' #It's realtime so only latest data matter   
         }
         self.consumer = Consumer(conf)

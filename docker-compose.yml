@@ -31,7 +31,7 @@ services:
             POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1504}
             POSTGRES_DB: ${POSTGRES_DB:-medical_realtime}
         ports:
-            - "5432:5432"
+            - "5433:5432"
         volumes:
             - pg_data:/var/lib/postgresql/data 
             # Automatic run file schema.sql when create database first time
@@ -46,13 +46,16 @@ services:
             ZOOKEEPER_TICK_TIME: 2000
         ports:
             - "2181:2181"
+        volumes:
+            - zookeeper_data:/var/lib/zookeeper/data
+            - zookeeper_log:/var/lib/zookeeper/log
         restart: unless-stopped
 
     kafka:
         image: confluentinc/cp-kafka:7.5.0
         container_name: medical_kafka
         volumes:
-            - kafka_data:/var/lib/kafka/data
+            - kafka_data_new:/var/lib/kafka/data
         depends_on:
             - zookeeper
         ports:
@@ -69,4 +72,6 @@ services:
         restart: unless-stopped
 volumes:
     pg_data:
-    kafka_data:
+    kafka_data_new:
+    zookeeper_data:
+    zookeeper_log:

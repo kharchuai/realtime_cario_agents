@@ -9,7 +9,7 @@ import sys
 import json
 import pandas as pd
 
-from src.realtime_medical.config import AppConfig
+from src.realtime_medical.config import AppConfig, BASE_DIR
 from src.realtime_medical.generator.sensor_simulator import _build_vitals_row
 from src.realtime_medical.triage.rules import RuleEngine
 
@@ -27,8 +27,13 @@ config = AppConfig.load_config("configs/config.yaml")
 check("Config load thành công", config.project_name == "realtime-medical-monitoring")
 check("Tên bảng khớp schema (vital_signs)", config.database.table == "vital_signs")
 
-df = pd.read_csv("E:\\dowload\\Serminal\\data_raw\\out\\case_48_numerics.csv", nrows=10)  # đổi path nếu file để chỗ khác
-row = df.iloc[0]
+sample_path = BASE_DIR / "data" / "streaming" / "case_48_numerics.csv"
+df = pd.read_csv(sample_path, nrows=10)
+source_columns = list(config.source_mapping.fields)
+rows_with_vitals = df.dropna(subset=source_columns, how="all")
+check("CSV smoke-test tồn tại trong repo", sample_path.is_file())
+check("CSV có ít nhất 1 dòng sinh hiệu", not rows_with_vitals.empty)
+row = rows_with_vitals.iloc[0]
 vitals = _build_vitals_row(row, config)
 check("Map được ít nhất 1 field từ CSV", len(vitals) > 0)
 check("Field 'hr' có mặt sau khi map", "hr" in vitals)

@@ -151,7 +151,8 @@ class AppConfig(BaseSettings):
     
     # from .env file
     kafka_broker_url:  str = "localhost:9092"
-    
+    kafka_topic_vitals: str = "patient_vitals_stream"
+
     postgres_user: str = "postgres"
     postgres_password:  str = ""
     postgres_host: str = "localhost"

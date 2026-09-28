@@ -39,7 +39,7 @@ class VitalsConsumer:
         }
         self.consumer = Consumer(conf)
         # This topic name matches the environment variable configuration
-        self.topic = "patient_vitals_stream"
+        self.topic = config.kafka_topic_vitals
         self.consumer.subscribe([self.topic])
         
         # Start DB  Client

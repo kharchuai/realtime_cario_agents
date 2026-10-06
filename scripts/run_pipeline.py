@@ -102,6 +102,11 @@ def parse_args() ->  argparse.Namespace:
         help = "Thời gian tối đa chờ consumer ghi dữ liệu xuống DB.",
     )
 
+    parser.add_argument(
+        "--realtime",
+        action = "store_true",
+        help = "Phát theo time_sec của CSV, giữ đúng thời gian giữa các lần đo."
+    )
     return parser.parse_args()
 
 def wait_for_database(engine, timeout:float = 30) -> None:
@@ -195,6 +200,7 @@ def replay_one_source(
     start_event: threading.Event,
     max_rows: int,
     delay: float,
+    realtime: bool = False,
 ) -> ReplayResult:
     result = ReplayResult(
         surgery_id = sources.surgery_id,
@@ -249,6 +255,13 @@ def replay_one_source(
             vitals["time_sec"] = time_sec
             vitals["recorded_at"] = recorded_at.isoformat(timespec = "microseconds")
 
+            if realtime:
+                remaining = (
+                    recorded_at - datetime.now(timezone.utc)
+                ).total_seconds()
+                if remaining > 0:
+                    time.sleep(remaining)
+
             accepted = producer.send_vital_sign(
                 surgery_id = sources.surgery_id,
                 patient_id = str(sources.patient_id),
@@ -264,7 +277,7 @@ def replay_one_source(
             if result.accepted % 1000 == 0 and result.accepted > 0:
                 logger.info("surgery=%s đã enqueue %d message",sources.surgery_id,result.accepted)
 
-            if delay > 0:
+            if delay > 0 and not realtime:
                 time.sleep(delay)
 
     logger.info(
@@ -299,7 +312,7 @@ def get_persisted_counts(engine, surgery_ids:list[int], replay_started_at: datet
             query,
             {
                 "surgery_ids": surgery_ids,
-                "replay_started_at": replay_started_at,
+                "replay_started_at": replay_started_at.astimezone(timezone.utc).replace(tzinfo=None)
             },
         )
 
@@ -376,9 +389,7 @@ def main() -> int:
         # Schema hiện tại dùng TIMESTAMP không timezone,
         # do đó chuyển UTC về dạng naive để so sánh DB ổn định.
 
-        replay_started_at = datetime.now(
-            timezone.utc
-        ).replace(tzinfo=None)
+        replay_started_at = datetime.now(timezone.utc)
 
         start_event = threading.Event()
 
@@ -403,6 +414,7 @@ def main() -> int:
                     start_event,
                     args.max_rows,
                     args.delay,
+                    args.realtime,
                 ): source
                 for source in sources
             }

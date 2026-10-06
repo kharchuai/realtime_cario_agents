@@ -30,7 +30,7 @@ import logging
 import threading
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from src.realtime_medical.config import AppConfig, BASE_DIR
@@ -81,7 +81,7 @@ def replay_data(config: AppConfig, data_path: str,surgery_id:int, patient_id:int
                     logger.warning(f"[surgery_id = {surgery_id}] Row {index}:  NO valid field, skip")
                     continue
                 
-                vitals["recorded_at"] = datetime.now().isoformat()
+                vitals["recorded_at"] = datetime.now(timezone.utc).isoformat()
                 
                 logger.info(f"[surgery_id ={surgery_id}] Push data {vitals}")
                 producer.send_vital_sign(surgery_id, patient_id, vitals)

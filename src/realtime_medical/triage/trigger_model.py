@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+import hashlib
 
 import joblib
 import pandas as pd
@@ -36,13 +37,26 @@ class MLTriageModel:
         if trained_features is not None and list(trained_features) != list(self.input_features):
             raise ValueError(f"Model feature order differs from bundle metadata at {model_path}")
 
-        trained_horizon = bundle.get("metadata", {}).get("prediction_horizon_seconds")
-        if trained_horizon is not None and trained_horizon != config.prediction_horizon_seconds:
-            logger.warning(
-                "Prediction horizon differs: model bundle=%s seconds, config=%s seconds",
-                trained_horizon,
-                config.prediction_horizon_seconds,
+        metadata = bundle.get("metadata", {})
+        trained_horizon = metadata.get("prediction_horizon_seconds")
+
+        if (
+            isinstance(trained_horizon, bool)
+            or not isinstance(trained_horizon, int)
+            or trained_horizon <= 0
+        ):
+            raise ValueError( "Model thiếu prediction_horizon_seconds hợp lệ trong metadata")
+
+        if trained_horizon != config.prediction_horizon_seconds:
+            raise ValueError(
+                "Khoảng dự đoán của model không khớp config: "
+                f"model={trained_horizon}, "
+                f"config={config.prediction_horizon_seconds}"
             )
+
+        self.prediction_horizon_seconds = trained_horizon
+        self.model_version = ("sha256:" + hashlib.sha256(model_path.read_bytes()).hexdigest())
+
 
         logger.info("Loaded model from %s with %d features", model_path, len(self.input_features))
         self.recall_threshold = 0.35

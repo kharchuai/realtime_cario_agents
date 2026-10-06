@@ -3,7 +3,13 @@
 #
 # Tác dụng: Đóng vai trò "bên nhận" trong luồng dữ liệu realtime — lắng
 # nghe Kafka topic "patient_vitals_stream", với mỗi message nhận được sẽ:
-#   1. Lưu dữ liệu sinh hiệu vào database (bảng vitals_stream).
+#
+#   - Khi có kết quả ML mới hoặc rules trả CRITICAL, tạo RiskEvent và gửi
+#  tới agent worker chạy nền.
+#   - Agent xuất giải thích ra console; việc ghi cảnh báo hiện có vẫn do
+#  consumer quản lý.
+#
+#  1. Lưu dữ liệu sinh hiệu vào database (bảng vitals_stream).
 #   2. Đánh giá mức độ nguy hiểm bằng 2 cách kết hợp:
 #      - Rule-based (RuleEngine)   : so với ngưỡng trong triage_rules
 #        (config.yaml) như nhịp tim cao/thấp, spo2 critical...
@@ -20,13 +26,20 @@
 import json
 import logging
 import time
-from datetime import datetime
+
+from datetime import datetime, timezone
 from confluent_kafka import Consumer, KafkaError
+from sqlalchemy.exc import DataError, IntegrityError
+
 from src.realtime_medical.config import AppConfig
 from src.realtime_medical.db.client import DataBaseClient
 from src.realtime_medical.streaming.windowing import FeatureBuilder, StaticFeatureStore, WindowAggregator
 from src.realtime_medical.triage.rules import RuleEngine
 from src.realtime_medical.triage.trigger_model import MLTriageModel
+
+from src.realtime_medical.agent import AgentPolicy, RiskEvent
+from src.realtime_medical.agent.runtime import AgentRuntime, AgentRuntimeError
+
 logger = logging.getLogger(__name__)
 
 class VitalsConsumer:
@@ -52,73 +65,256 @@ class VitalsConsumer:
         
         self.batch_size = config.streaming.batch_size
         self.flush_interval = config.streaming.window_size_seconds
-        
+        self.retry_interval = 5.0
+
         self._vitals_buffer =  []
         self._alerts_buffer = []
-        self._last_flush_time = time.time()
+
+        self._last_flush_time = time.monotonic()
+        self._next_retry_time = 0.0
+        self._retry_pending = False
+
+        self.agent_runtime = AgentRuntime(
+            policy =  AgentPolicy(
+                watch_enter = 0.35,
+                watch_exit = 0.25,
+                high_enter = 0.65,
+                high_exit = 0.55,
+                horizon_seconds = self.ml_model.prediction_horizon_seconds
+            ),
+        )
 
     def _should_flush(self) -> bool:
-        buffer_full = len(self._vitals_buffer) >= self.batch_size
-        time_elapse = (time.time() - self._last_flush_time) >= self.flush_interval
+        """Quyết định khi nào ghi dữ liệu đang nằm trong buffer.
+
+        Flush khi đủ batch hoặc hết thời gian gom dữ liệu. Nếu lượt ghi
+        trước thất bại, chỉ thử lại sau retry_interval để tránh gây tải DB.
+        """
+
         has_pending_data = bool(self._vitals_buffer or self._alerts_buffer)
-        return has_pending_data and( buffer_full or time_elapse)
+        if not has_pending_data:
+            return False
+        
+        now = time.monotonic()
+        if self._retry_pending:
+            return now >= self._next_retry_time
+        
+        buffer_full = (
+            len(self._vitals_buffer) >= self.batch_size
+            or len(self._alerts_buffer) >= self.batch_size
+        )
+        interval_elapsed = (
+            now - self._last_flush_time >= self.flush_interval
+        )
+
+        return buffer_full or interval_elapsed
     
     
     def _flush_vitals(self) -> None:
+        """Quyết định khi nào ghi dữ liệu đang nằm trong buffer.
+
+        Flush khi đủ batch hoặc hết thời gian gom dữ liệu. Nếu lượt ghi
+        trước thất bại, chỉ thử lại sau retry_interval để tránh gây tải DB.
+        """
         if not self._vitals_buffer:
             return
+        
+        rows = list(self._vitals_buffer)
+
         try:
-            self.db_client.insert_vitals_batch(self._vitals_buffer)
-        except Exception as e:
-            logger.error(
-                f"Batch insert vitals fails ({len(self._vitals_buffer)} row)"
-                f"Fallback command prompts you to insert line to isolate the faulty line: {e}"
+            inserted = self.db_client.insert_vitals_batch(rows)
+        except (ValueError, DataError, IntegrityError):
+            logger.exception(
+                "VITALS_BATCH_DATA_ERROR rows=%s; thử từng dòng",
+                len(rows),
             )
-            for surgery_id, vitals in self._vitals_buffer:
-                try:
-                    self.db_client.insert_vitals(surgery_id, vitals)
-                except  Exception as row_err:
-                    logger.error(f"Skipping 1 invalid vitals row (surgery_id = {surgery_id}): {row_err}")
-        finally:
-            self._vitals_buffer.clear()
-            
-    def _flush_alerts(self) -> None:
-        if not self._alerts_buffer:
-            return
-        try:
-            self.db_client.insert_alerts_batch(self._alerts_buffer)
-        except Exception as e:
-            logger.error(
-                f"Batch insert of alert failed ({len(self._alerts_buffer)} rows)"
-                f"falling back to row-by-row insertion: {e}"
-            )
-            for alert in self._alerts_buffer:
-                try:
-                    self.db_client.insert_alert(
-                        alert["surgery_id"],
-                        alert["recorded_at"],
-                        alert["risk_level"],
-                        alert["model_score"],
-                        alert["alert_reason"],
-                    )
-                except Exception as row_err:
-                    logger.error(f"Skipping 1 invalid alert row (surgery_id = {alert['surgery_id']}): {row_err}")
-                    
-        finally:
-            self._alerts_buffer.clear()
-            
-    def _flush(self) -> None:
-        self._flush_vitals()
-        self._flush_alerts()
-        self._last_flush_time = time.time()
             
         
+        else:
+            # Không có exception: batch đã được ghi hoặc bản ghi đã tồn tại.
+            # inserted có thể bằng 0 nếu tất cả đều trùng khóa.
+            self._vitals_buffer.clear()
+
+            logger.info(
+                "VITALS_FLUSH_OK handled=%s newly_inserted=%s",
+                len(rows),
+                inserted,
+            )
+            return 
+        
+        pending = []
+        for surgery_id, vitals in rows:
+            try:
+                self.db_client.insert_vitals_batch([(surgery_id, vitals)])
+            
+            except Exception:
+                pending.append((surgery_id, vitals))
+
+                logger.exception(
+                    "VITAL_ROW_WRITE_FAILED surgery_id=%s "
+                    "recorded_at=%s; giữ để thử lại",
+                    surgery_id,
+                    vitals.get("recorded_at"),
+                )
+
+        self._vitals_buffer = pending
+
+        logger.info(
+            "VITALS_FLUSH_PARTIAL handled=%s pending=%s",
+            len(rows) - len(pending),
+            len(pending)
+        )            
+            
+    def _flush_alerts(self) -> None:
+        """Ghi cảnh báo sau khi sinh hiệu tương ứng đã được lưu.
+
+        Những cảnh báo có sinh hiệu còn trong buffer được giữ lại, tránh
+        vi phạm khóa ngoại. Các cảnh báo ghi thất bại cũng được giữ để thử sau.
+
+        API cảnh báo hiện chưa chống trùng khi thử lại sau một lỗi không rõ
+        transaction đã commit hay chưa; cần bổ sung idempotency ở tầng DB
+        để giải quyết trường hợp đó.
+        """
+        if not self._alerts_buffer:
+            return
+
+        blocked_keys = {
+            (surgery_id, vitals.get("recorded_at"))
+            for surgery_id, vitals in self._vitals_buffer
+        }
+
+        ready = []
+        waiting = [] 
+        for alert in self._alerts_buffer:
+            key = (
+                alert["surgery_id"],
+                alert["recorded_at"],
+            )
+        
+            if key in blocked_keys:
+                waiting.append(alert)
+            else:
+                ready.append(alert)
+        
+        if not ready:
+            logger.warning(
+                f"ALERTS_WAITiNG_FOR_VITALS pending {len(waiting)}"
+            )
+            return
+        try:
+            self.db_client.insert_alerts_batch(ready)
+        except (ValueError, DataError, IntegrityError):
+            logger.exception(f"ALERTS_BATCH_DATA_ERROR rows = {len(ready)}; thử từng dòng")
+        
+        except Exception:
+            logger.exception(
+                f"ALERTS_BATCH_WRITE_FAILD rows = {len(ready)}; giữ để thử lại"
+            )
+            return
+        
+        else:
+            self._alerts_buffer = waiting
+
+            logger.info(f"ALERTS_FLUSH_OK saved = {len(ready)} waiting = {len(waiting)}")
+            return
+        
+        failed = []
+
+        for alert in ready:
+            try:
+                self.db_client.insert_alert(
+                alert["surgery_id"],
+                alert["recorded_at"],
+                alert["risk_level"],
+                alert["model_score"],
+                alert["alert_reason"],
+                )
+            except Exception: 
+                failed.append(alert)
+
+                logger.exception(
+                    f"ALERT_ROWS_WRITE_FAILED surgery_id = {alert["surgery_id"]} "
+                    f"recorded_at = {alert["recorded_at"]}; giữ để thử lại")
+        self._alerts_buffer = waiting + failed
+
+        logger.info(f"ALERTS_FLUSH_PARTIAL saved = {len(ready) - len(failed)} failed = {len(failed)} waiting = {len(waiting)}")
+
+            
+    def _flush(self) -> None:
+        """Ghi sinh hiệu trước cảnh báo và lên lịch thử lại khi còn dữ liệu.
+
+        Một lượt flush có thể hoàn thành một phần. Dữ liệu còn lại được giữ
+        trong RAM và chỉ được thử lại sau retry_interval.
+        """
+        self._flush_vitals()
+        self._flush_alerts()
+        
+        now = time.monotonic()
+        self._last_flush_time = now
+
+        self._retry_pending = bool(
+            self._vitals_buffer or self._alerts_buffer
+        )
+
+        if self._retry_pending:
+            self._next_retry_time = now + self.retry_interval
+
+            logger.warning(
+                f"DB_RETRY_SCHEDULED vitals_pending = {len(self._vitals_buffer)} "
+                f"alerts_pending = {len(self._alerts_buffer)} retry_after_seconds = {self.retry_interval:.2f}"
+            )
+        else:
+            self._next_retry_time = 0.0
+    
+    def _parse_observed_at(self, value: str) -> datetime:
+        """Đọc timestamp có múi giờ và chuẩn hóa sang UTC.
+
+        Không tự gán múi giờ cho timestamp thiếu offset vì có thể diễn giải
+        sai thời điểm đo. Producer phải gửi ISO 8601 có offset hoặc hậu tố Z.
+        """
+    
+        observed_at = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+
+        if observed_at.utcoffset() is None:
+            raise ValueError("recorded_at thiếu múi giờ; producer phải gửi timestamp UTC")
+        return observed_at.astimezone(timezone.utc)
+
+    def _submit_agent_event(self, msg, surgery_id:int, observed_at: datetime, risk_level:  str, rule_reasons, features, ml_score ):
+        """Gửi snapshot nhất quán của lần đánh giá sang agent.
+
+        Gửi khi có điểm ML mới hoặc cảnh báo CRITICAL. Chất lượng tạm đặt
+        PARTIAL khi có điểm ML vì feature hiện chưa phản ánh đầy đủ tuổi
+        tín hiệu và dữ liệu thiếu trước forward-fill.
+        """
+        if ml_score is None and risk_level != "CRITICAL":
+            return
+        
+        event = RiskEvent(
+            event_id  = (f"{msg.topic()}:{msg.partition()}:{msg.offset()}"),
+            surgery_id = surgery_id,
+            observed_at = observed_at,
+            current_rule_level = risk_level,
+            rule_reasons = tuple(rule_reasons),
+            model_score = ml_score,
+            horizon_seconds = self.ml_model.prediction_horizon_seconds,
+            model_version =  self.ml_model.model_version,
+            data_quality = "PARTIAL" if ml_score is not None else "UNKNOWN",
+            features =  dict(features or {}),
+            context = {},
+        )
+
+        self.agent_runtime.submit(event)
+
     def start_listening(self):
         logger.info(f"Consumer is listening to topic: {self.topic} ..." 
                     f"(batch_size = {self.batch_size}, flush_interval = {self.flush_interval})")
         try:
+            self.agent_runtime.start()
             while True:
                 # Poll data each second
+                self.agent_runtime.check_health()
                 msg = self.consumer.poll(timeout = 1)
                 
                 if msg is None:
@@ -156,13 +352,14 @@ class VitalsConsumer:
 
                     # Rules use each reading; ML uses the configured streaming window.
                     risk_level, rule_reasons = self.rule_engine.evaluate(vitals_data)
+                    
+                    observed_at = self._parse_observed_at(vitals_data["recorded_at"])
+                    
                     ml_score = None
+                    features =None
                     try:
-                        recorded_at = datetime.fromisoformat(
-                            vitals_data["recorded_at"].replace("Z", "+00:00")
-                        ).timestamp()
                         features = self.feature_builder.process_reading(
-                            surgery_id, vitals_data, timestamp=recorded_at
+                            surgery_id, vitals_data, timestamp=observed_at.timestamp()
                         )
                         if features is not None:
                             ml_score = self.ml_model.predict_risk(features)
@@ -185,18 +382,44 @@ class VitalsConsumer:
                             "model_score": ml_score,
                             "alert_reason": alert_reason,
                         })
-                        
+                    
+                    self._submit_agent_event(
+                        msg = msg, 
+                        surgery_id = surgery_id,
+                        observed_at = observed_at,
+                        risk_level = risk_level,
+                        rule_reasons = rule_reasons,
+                        features = features,
+                        ml_score = ml_score,
+                    )
                     if self._should_flush():
                         self._flush()
+                except AgentRuntimeError:
+                    raise
+                
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
                     continue    
         except KeyboardInterrupt:
             logger.info("Receive command to stop the consumer")
         finally:
-            self._flush()
-            self.consumer.close()
-            self.db_client.close()
+            try:
+                self.agent_runtime.close()
+            finally:
+                try:
+                    self._flush()
+
+                    if self._vitals_buffer or self._alerts_buffer:
+                        raise RuntimeError(
+                            "Shutdown chưa lưu hết dữ liệu: "
+                            f"vitals={len(self._vitals_buffer)}, "
+                            f"alerts={len(self._alerts_buffer)}. "
+                            "Các bản ghi còn trong RAM chưa được lưu bền vững.")
+                finally:   
+                    try:
+                        self.consumer.close()
+                    finally:
+                        self.db_client.close()
 
 if __name__ == "__main__":
     # Independent consumer test run

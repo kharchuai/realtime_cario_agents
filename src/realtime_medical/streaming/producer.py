@@ -46,7 +46,12 @@ class VitalsProducer:
             self.delivery_errors.append(str(err))
             logger.error(f"Failed to send data: {err}")
         else:
-            logger.debug(f"Data sent to topic {msg.topic()} partition [{msg.partition()}], offset: {msg.offset()}")
+            logger.info(
+                "KAFKA_DELIVERED topic=%s partition=%s offset=%s",
+                msg.topic(),
+                msg.partition(),
+                msg.offset(),
+            )
             
             
     def send_vital_sign(self,surgery_id:int, patient_id: str, vital_data: dict):

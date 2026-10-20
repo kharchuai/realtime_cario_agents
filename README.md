@@ -20,19 +20,47 @@ Các ví dụ dùng **PowerShell trên Windows**, chạy tại thư mục gốc 
 
 ## Cấu trúc dự án
 
+## Cấu trúc dự án
+
 ```text
-configs/                  Cấu hình pipeline, rules và model
-data/                     Thông tin bệnh nhân và CSV sinh hiệu
-db/                       Schema và dữ liệu khởi tạo PostgreSQL
-models/                   Model bundle
-scripts/                  Seed dữ liệu, chạy pipeline và phân tích metrics
-src/realtime_medical/     Consumer, producer, rules, ML và agent
-test/                     Kiểm thử
-logs/                     Log và report theo lượt chạy
-tmp/benchmark/            Trace metrics
-docker-compose.yml        Cấu hình các dịch vụ Docker
-requirements.txt          Thư viện Python
+realtime_cario_agents/
+├── configs/
+│   └── config.yaml                   # Cấu hình pipeline, rules và model
+├── data/
+│   ├── clinical_data.csv             # Thông tin lâm sàng
+│   ├── clinical_parameters.csv       # Tham số lâm sàng
+│   └── streaming/                    # CSV sinh hiệu cho từng case
+├── db/
+│   ├── schema_1.sql                  # Cấu trúc database
+│   └── seed_patients.sql             # Dữ liệu khởi tạo
+├── models/
+│   └── heart_disease_classifier.pkl  # Model ML đang sử dụng
+├── scripts/
+│   ├── run_pipeline.py               # Chạy replay baseline hoặc fault
+│   ├── run_fault.py                  # Điều khiển fault
+│   ├── seed_data_clinical.py         # Nạp dữ liệu bệnh nhân
+│   └── *benchmark.py                 # Phân tích và tổng hợp metrics
+├── src/realtime_medical/
+│   ├── streaming/                    # Producer, consumer, sliding window
+│   ├── triage/                       # Rules và suy luận ML
+│   ├── agent/                        # Xử lý và giải thích cảnh báo
+│   ├── db/                           # Kết nối PostgreSQL
+│   ├── utils/                        # Metrics, report và fault injection
+│   ├── generator/                    # Mô phỏng dữ liệu cảm biến
+│   ├── config.py                     # Đọc cấu hình
+│   └── main.py                       # Điểm vào của consumer
+├── test/                             # Kiểm thử pipeline và metrics
+├── docs/                             # Tài liệu bổ sung
+├── logs/                             # Log và report của từng lượt chạy
+├── tmp/benchmark/                    # Trace metrics trung gian
+├── .env.example                      # Mẫu biến môi trường
+├── docker-compose.yml                # PostgreSQL, Kafka và consumer
+├── Dockerfile                        # Image của consumer
+├── requirements.txt                  # Thư viện Python
+└── README.md
 ```
+
+Luồng chính: `run_pipeline.py` đọc CSV và phát lên Kafka; consumer áp dụng rules, ML và agent rồi ghi kết quả vào PostgreSQL. Khi bật metrics, report cuối nằm trong `logs/<run-id>/report.json`.
 
 ## Cài đặt
 

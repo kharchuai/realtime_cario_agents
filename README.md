@@ -17,8 +17,48 @@ CSV → Producer → Kafka → Consumer → PostgreSQL
 - Dữ liệu tại `data/clinical_data.csv` và `data/streaming/case_<id>_numerics.csv`.
 
 Các ví dụ dùng **PowerShell trên Windows**, chạy tại thư mục gốc repository. Gọi trực tiếp `python` trong môi trường đang sử dụng.
-
 ## Cấu trúc dự án
+
+```text
+realtime_cario_agents/
+├── configs/
+│   └── config.yaml                 # Cấu hình pipeline, rules và model
+├── data/
+│   ├── clinical_data.csv           # Thông tin lâm sàng
+│   ├── clinical_parameters.csv     # Tham số lâm sàng
+│   └── streaming/                  # CSV sinh hiệu cho từng case
+├── db/
+│   ├── schema_1.sql                # Cấu trúc database
+│   └── seed_patients.sql           # Dữ liệu khởi tạo
+├── models/
+│   └── heart_disease_classifier.pkl # Model ML đang sử dụng
+├── scripts/
+│   ├── run_pipeline.py             # Chạy replay baseline hoặc fault
+│   ├── run_fault.py                # Điều khiển fault
+│   ├── seed_data_clinical.py       # Nạp dữ liệu bệnh nhân
+│   └── *benchmark.py               # Phân tích và tổng hợp metrics
+├── src/realtime_medical/
+│   ├── streaming/                  # Producer, consumer, sliding window
+│   ├── triage/                     # Rules và suy luận ML
+│   ├── agent/                      # Xử lý và giải thích cảnh báo
+│   ├── db/                         # Kết nối PostgreSQL
+│   ├── utils/                      # Metrics, report và fault injection
+│   ├── generator/                  # Mô phỏng dữ liệu cảm biến
+│   ├── feedback/                   # Logic retrain
+│   ├── config.py                   # Đọc cấu hình
+│   └── main.py                     # Điểm vào của consumer
+├── test/                           # Kiểm thử pipeline và metrics
+├── docs/                           # Tài liệu bổ sung
+├── logs/                           # Log và report của từng lượt chạy
+├── tmp/benchmark/                  # Trace metrics trung gian
+├── .env.example                    # Mẫu biến môi trường
+├── docker-compose.yml              # PostgreSQL, Kafka và consumer
+├── Dockerfile                      # Image của consumer
+├── requirements.txt                # Thư viện Python
+└── README.md
+```
+
+Luồng chính: `run_pipeline.py` đọc CSV và phát lên Kafka; consumer áp dụng rules, ML và agent rồi ghi kết quả vào PostgreSQL. Khi bật metrics, report cuối nằm trong `logs/<run-id>/report.json`.
 
 ## Cấu trúc dự án
 

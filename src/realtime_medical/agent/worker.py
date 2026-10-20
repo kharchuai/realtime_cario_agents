@@ -60,7 +60,7 @@ class AgentWorker:
             self._queue.put_nowait(deepcopy(event))
             return True
         except Full:
-            logger.error("Hàng đợi agent đầy event_id=%s", event.event_id)
+            logger.error("Agent queue is full event_id=%s", event.event_id)
             return False
         
     def run_once(self, timeout_seconds:float = 0.1) -> bool:
@@ -78,7 +78,7 @@ class AgentWorker:
         try:
             self._process(event)
         except Exception as error:
-            logger.exception("Worker xử lý thất bại event_id=%s", event.event_id)
+            logger.exception("Worker processing failed event_id=%s", event.event_id)
             self.failure_handler(event, error)
         finally:
             self._queue.task_done()
@@ -116,13 +116,13 @@ class AgentWorker:
 
         if state is None:
             if len(self._states) >= self.max_active_surgeries:
-                raise RuntimeError("Đã đạt giới hạn ca mổ đang hoạt động")
+                raise RuntimeError("Active surgery limit reached")
             state = SurgeryState()
             self._states[event.surgery_id] = state
 
         if state.last_result is not None:
             if event.observed_at < state.last_result.observed_at:
-                logger.warning("Bỏ cập nhật agent đến muộn event_id=%s", event.event_id)
+                logger.warning("Skipping late agent update event_id=%s", event.event_id)
                 self._remember_processed(event.event_id)
                 return None
         

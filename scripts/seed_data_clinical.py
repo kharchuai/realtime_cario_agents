@@ -101,11 +101,11 @@ def load_seed_data(csv_path, patient_limit):
     
     if missing_columns:
         raise ValueError(
-            f"CSV thiếu các cột bắt buộc: {sorted(missing_columns)}"
+            f"CSV is missing required columns: {sorted(missing_columns)}"
         )
     
     if patient_limit <= 0:
-        raise ValueError("--patients phải lớn hơn 0")
+        raise ValueError("--patients must be greater than 0")
     
     #  Giữ thứ tự xuất hiện trong CSV và chọn đúng N bệnh nhân duy nhất.
     selected_patient_ids = (
@@ -118,8 +118,8 @@ def load_seed_data(csv_path, patient_limit):
     
     if len(selected_patient_ids) <  patient_limit:
         print(
-            f"Cảnh báo: yêu cầu {patient_limit} bệnh nhân nhưng dữ liệu "
-            f"chỉ có {len(selected_patient_ids)} bệnh nhân."
+            f"Warning: Requested {patient_limit} patients, but the data "
+            f"only contains {len(selected_patient_ids)} patients."
         )
     
     selected_df =  clinical_df[
@@ -251,26 +251,26 @@ def insert_seed_data(patients, surgeries):
         engine.dispose()
         
 def main():
-    parser = argparse.ArgumentParser(description="Import patient và surgeries từ clinical_data.csv")
+    parser = argparse.ArgumentParser(description="Import patients and surgeries from clinical_data.csv")
     
     parser.add_argument(
         "--patients",
         type=int,
         required = True,
-        help="Số bệnh nhân duy nhất muốn import",
+        help="Number of unique patients to import",
     )
     
     parser.add_argument(
         "--csv",
         type = Path,
         default = Path("data/clinical_data.csv"),
-        help = "Đường dẫn tới clinical_data.csv",
+        help = "Path to clinical_data.csv",
     )
     
     args =  parser.parse_args()
     
     if not args.csv.exists():
-        raise FileNotFoundError(f"Không tìm thấy file: {args.csv}")
+        raise FileNotFoundError(f"File not found: {args.csv}")
     
     patients, surgeries = load_seed_data(
         csv_path= args.csv,
@@ -278,8 +278,8 @@ def main():
     )
     insert_seed_data(patients, surgeries)
 
-    print(f"Đã xử lý {len(patients)} bệnh nhân.")
-    print(f"Đã xử lý {len(surgeries)} ca phẫu thuật.")
+    print(f"Processed {len(patients)} patients.")
+    print(f"Processed {len(surgeries)} surgeries.")
 
 if  __name__ == "__main__":
     main()

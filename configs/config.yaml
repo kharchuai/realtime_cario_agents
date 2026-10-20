@@ -35,7 +35,7 @@ source_mapping:
     "Solar8000/NIBP_SBP": "sbp"
     "Solar8000/NIBP_DBP": "dbp"
     "Solar8000/NIBP_MBP": "mbp"
-    "Solar8000/RR": "rr"
+    "Solar8000/RR_CO2": "rr"
     "Solar8000/BT": "bt"
   # 3. steaming information
 streaming:

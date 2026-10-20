@@ -31,14 +31,14 @@ class AgentHarness:
             result = self.graph.run(event, state)
             self._validate(event, result)
         except Exception:
-            logger.exception("Agent lỗi event_id=%s", event.event_id)
+            logger.exception("Agent failed event_id=%s", event.event_id)
             result = self._fallback(event)
 
         elapsed_ms = (perf_counter() - started) * 1000
         exceeded = (elapsed_ms > self.graph.policy.prosessing_budget_seconds * 1000)
 
         if exceeded:
-            logger.warning("Agent vượt ngân sách event_id=%s latency_ms=%.1f", event.event_id, elapsed_ms)
+            logger.warning("Agent exceeded processing budget event_id=%s latency_ms=%.1f", event.event_id, elapsed_ms)
         return replace(
             result, 
             processing_ms = round(elapsed_ms, 3),
@@ -68,13 +68,13 @@ class AgentHarness:
         )
 
         if actual != expected:
-            raise ValueError("Agent đã thay đổi dữ liệu nguồn")
+            raise ValueError("Agent modified the source data")
         
         if result.forecast_level not in {"NONE", "WATCH", "HIGH", "UNKNOWN"}:
-            raise ValueError("forecast_level không hợp lệ")
+            raise ValueError("Invalid forecast_level")
 
         if not result.explaination:
-            raise ValueError("Thiếu giải thích")
+            raise ValueError("Missing explanation")
 
     def _fallback(self, event: RiskEvent) -> AgentResult:
         """Tạo đầu ra tối thiểu, giữ nguyên cảnh báo rules và điểm ML."""
@@ -91,12 +91,12 @@ class AgentHarness:
             data_quality = "UNKNOWN",
             rule_reasons = event.rule_reasons,
             evidence = (),
-            limitations =("Agent gặp lỗi khi tổng hợp kết quả.",),
+            limitations =("Agent encountered an error while compiling the results.",),
             explaination = (
-                f"Ca mổ {event.surgery_id}: "
-                f"rule = {event.current_rule_level}."
-                "Chưa tạo được giải thích dự đoán;  "
-                "giữ nguyên kết quả ngồn đẻ người phụ trách xem xét"
+                f"Surgery {event.surgery_id}: "
+                f"rule = {event.current_rule_level}. "
+                "Could not generate a forecast explanation; "
+                "source results are preserved for review by the person in charge."
             ),
             should_public= True,
         )

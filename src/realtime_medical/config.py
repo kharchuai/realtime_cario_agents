@@ -45,10 +45,14 @@ from urllib.parse import quote_plus
 
 import yaml 
 import os
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR =  Path(__file__).resolve().parent.parent.parent
+
+# Metrics/logging also read os.environ directly, before AppConfig is instantiated.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 # 1. canonical_fields
 class CanonicalFieldsConfig(BaseModel):

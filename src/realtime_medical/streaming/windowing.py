@@ -114,7 +114,7 @@ class WindowAggregator:
         for field_name, rng in self.artifact_ranges.items():
             val = cleaned.get(field_name)
             if val is not None and not (rng.valid_min <= val <= rng.valid_max):
-                logger.debug(f"Artifact filtered: {field_name} = {val} ngoai [{rng.valid_min}, {rng.valid_max}]")
+                logger.debug(f"Artifact filtered: {field_name} = {val} outside [{rng.valid_min}, {rng.valid_max}]")
                 cleaned[field_name] = None
         return cleaned
     

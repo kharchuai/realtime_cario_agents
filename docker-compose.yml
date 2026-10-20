@@ -131,6 +131,19 @@ services:
             POSTGRES_PORT: 5432
             KAFKA_BROKER_URL: kafka:29092
             KAFKA_TOPIC_VITALS: ${KAFKA_TOPIC_VITALS:-patient_vitals_stream}
+
+            BENCH_ENABLED: "${BENCH_ENABLED:-0}"
+            BENCH_RUN_ID: "${BENCH_RUN_ID:-}"
+            METRICS_DIR: /app/tmp/benchmark
+            BENCH_CASES: "${BENCH_CASES:-}"
+            BENCH_SIGNAL_FIELDS: "${BENCH_SIGNAL_FIELDS:-hr,spo2}"
+            BENCH_ALERT_ACK_LOSS: "${BENCH_ALERT_ACK_LOSS:-0}"
+            ML_INFERENCE_N_JOBS: "${ML_INFERENCE_N_JOBS:--1}"
+
+        volumes:
+            - ./tmp/benchmark:/app/tmp/benchmark
+            - ./logs:/app/logs
+
         depends_on:
             postgres:
                 condition: service_healthy

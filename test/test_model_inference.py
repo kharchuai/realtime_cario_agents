@@ -1,6 +1,7 @@
 import json 
+import os
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import joblib
@@ -18,6 +19,10 @@ class FakePipeline:
         self.feature_names_in_ = feature_names
         self.probability = probability
         self.received_frame = None
+
+    def set_params(self, **params):
+        self.params = params
+        return self
 
     def predict_proba(self, frame):
         self.received_frame = frame.copy()
@@ -40,25 +45,29 @@ class ModelInferenceTests(unittest.TestCase):
             len(set(model.input_features)),
         )
 
-    def test_model_bundle_info_matches_saved_model(self):
+    def test_saved_bundle_contains_matching_feature_schema_and_horizon(self):
         bundle_path = BASE_DIR / self.config.model.path
-        bundle_info_path = BASE_DIR / "models/model_bundle_info.json"
 
         saved_bundle = joblib.load(bundle_path)
-        bundle_info = json.loads(bundle_info_path.read_text(encoding = "utf-8"))
 
         self.assertIn("pipeline", saved_bundle)
         self.assertIn("feature_order", saved_bundle)
 
-        self.assertEqual(bundle_info["feature_order"], saved_bundle["feature_order"])
-        self.assertEqual(bundle_info["metadata"], saved_bundle["metadata"])
+        self.assertEqual(
+            list(saved_bundle["pipeline"].feature_names_in_),
+            list(saved_bundle["feature_order"]),
+        )
+        self.assertEqual(
+            saved_bundle["metadata"]["prediction_horizon_seconds"],
+            self.config.model.prediction_horizon_seconds,
+        )
 
     def test_real_model_returns_probability_between_zero_and_one(self):
         model = MLTriageModel(self.config.model)
 
         # Tránh model sử dụng nhiều CPU trong lúc chạy unit test.
         try:
-            model.model["classtifier"].n_jobs =  1
+            model.model["classifier"].n_jobs = 1
         except (KeyError,  TypeError, AttributeError):
             pass
         
@@ -166,7 +175,9 @@ class ModelInferenceTests(unittest.TestCase):
         fake_bundle = {
             "pipeline": fake_pipeline,
             "feature_order": feature_order,
-            "metadata": {},
+            "metadata": {
+                "prediction_horizon_seconds": self.config.model.prediction_horizon_seconds,
+            },
         }
 
         with patch("src.realtime_medical.triage.trigger_model.joblib.load", return_value = fake_bundle,):
@@ -188,7 +199,7 @@ class ModelInferenceTests(unittest.TestCase):
     def test_alert_is_required_when_score_equals_threshold(self):
         model = MLTriageModel(self.config.model)
 
-        score = model.recall_threshold + 0.01
+        score = model.recall_threshold
 
         self.assertTrue(model.is_alert_required(score))
 
@@ -255,8 +266,18 @@ class ModelInferenceTests(unittest.TestCase):
         from src.realtime_medical.streaming.consumer import VitalsConsumer
 
         class FakeMessage:
-            def __init__(self, payload):
+            def __init__(self, payload, offset):
                 self.payload = payload
+                self.message_offset = offset
+
+            def topic(self):
+                return "test-vitals"
+
+            def partition(self):
+                return 0
+
+            def offset(self):
+                return self.message_offset
 
             def error(self):
                 return None
@@ -268,14 +289,7 @@ class ModelInferenceTests(unittest.TestCase):
             def __init__(self, kafka_config):
                 self.subscribed_topics = []
 
-                start_time = datetime(
-                    2026,
-                    9,
-                    22,
-                    10,
-                    0,
-                    0,
-                )
+                start_time = datetime.now(timezone.utc) - timedelta(seconds=5)
 
                 self.messages = [
                     FakeMessage({
@@ -291,11 +305,11 @@ class ModelInferenceTests(unittest.TestCase):
                         "mbp":90,
                         "rr":16,
                         "bt":37.0,
-                    })
+                    }, index)
                     for index in range(6)
                 ]
 
-            def subscribe(self, topics):
+            def subscribe(self, topics, on_assign=None):
                 self.subscribed_topics = topics
 
             def poll(self, timeout):
@@ -337,6 +351,8 @@ class ModelInferenceTests(unittest.TestCase):
         class FakeMLModel:
             def __init__(self, config):
                 self.received_features = []
+                self.prediction_horizon_seconds = config.prediction_horizon_seconds
+                self.model_version = "test-model"
 
             def predict_risk(self, features):
                 self.received_features.append(features)
@@ -346,6 +362,7 @@ class ModelInferenceTests(unittest.TestCase):
                 return score >= 0.35
 
         with (
+            patch.dict(os.environ, {"BENCH_ENABLED": "0"}),
             patch("src.realtime_medical.streaming.consumer.Consumer", FakeKafkaConsumer),
             patch("src.realtime_medical.streaming.consumer.DataBaseClient", FakeDatabase),
             patch("src.realtime_medical.streaming.consumer.StaticFeatureStore", FakeStaticFeatureStore),

@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 import hashlib
+import os
 
 import joblib
 import pandas as pd
@@ -37,6 +38,14 @@ class MLTriageModel:
         if trained_features is not None and list(trained_features) != list(self.input_features):
             raise ValueError(f"Model feature order differs from bundle metadata at {model_path}")
 
+        # Validate the bundle before configuring the inference worker count.
+        inference_jobs = os.environ.get("ML_INFERENCE_N_JOBS")
+        if inference_jobs is not None:
+            jobs = int(inference_jobs)
+            if jobs != -1 and jobs < 1:
+                raise ValueError("ML_INFERENCE_N_JOBS must be -1 or a positive integer")
+            self.model.set_params(classifier__n_jobs=jobs)
+
         metadata = bundle.get("metadata", {})
         trained_horizon = metadata.get("prediction_horizon_seconds")
 
@@ -45,11 +54,11 @@ class MLTriageModel:
             or not isinstance(trained_horizon, int)
             or trained_horizon <= 0
         ):
-            raise ValueError( "Model thiếu prediction_horizon_seconds hợp lệ trong metadata")
+            raise ValueError( "Model metadata is missing a valid prediction_horizon_seconds")
 
         if trained_horizon != config.prediction_horizon_seconds:
             raise ValueError(
-                "Khoảng dự đoán của model không khớp config: "
+                "Model prediction horizon does not match the configuration: "
                 f"model={trained_horizon}, "
                 f"config={config.prediction_horizon_seconds}"
             )
@@ -62,7 +71,7 @@ class MLTriageModel:
         self.recall_threshold = 0.35
 
     def predict_risk(self, features: dict) -> float:
-        """Predict from window and static features; the pipeline imputes missing values."""
+        """Predict from ordered features, preserving missing values as NaN."""
         row = {name: features.get(name) for name in self.input_features}
         frame = pd.DataFrame([row], columns=self.input_features).astype(float)
         return float(self.model.predict_proba(frame)[0][1])

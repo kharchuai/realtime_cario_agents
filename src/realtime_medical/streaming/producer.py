@@ -24,7 +24,7 @@ import json
 import logging
 from confluent_kafka import Producer
 from src.realtime_medical.config import AppConfig
-
+from src.realtime_medical.utils.benchmark_hooks import make_metrics, record_id
 logger = logging.getLogger(__name__)
 
 class VitalsProducer:
@@ -39,6 +39,7 @@ class VitalsProducer:
         self.producer = Producer(conf)
         self.topic = config.kafka_topic_vitals  # Match the configuration in the .env file
         self.delivery_errors = []
+        self.metrics = make_metrics("producer")
 
     def delivery_report(self, err, msg):
         """ The callback is invoked when Kafka successfully receives a message or fails to do so"""
@@ -62,13 +63,38 @@ class VitalsProducer:
             "patient_id": patient_id,
             "produced_at": time.time(),   # dùng underscore cho nhất quán style
         }
+        rid = None
+        if self.metrics.enabled:
+            rid = record_id(self.metrics.run_id, surgery_id, vital_data["recorded_at"])
+            self.metrics.trace("producer_attempt", rid)
+
+        def on_delivery(err, msg):
+            """Gắn Kafka ACK/error với ID reading được giữ trong closure.
+
+            Notes:
+                Giữ delivery_report cũ để flush vẫn báo delivery_errors.
+                send_vital_sign trả True chỉ chứng minh client enqueue, chưa phải ACK.
+                Khi tắt đo, vẫn xử lý kết quả gửi nhưng không ghi trace.
+            """
+            self.delivery_report(err, msg)
+            if not self.metrics.enabled:
+                return
+            if err is not None:
+                self.metrics.trace(
+                    "kafka_delivery_failed", rid, error_type = type(err).__name__
+                )
+            else:
+                self.metrics.trace(
+                    "kafka_acked", rid, topic = msg.topic(), partition = msg.partition(), offset = msg.offset(),
+                )
+
         for attempt in range(2):
             try:
                 self.producer.produce(
                     topic=self.topic,
                     key=str(surgery_id),
                     value=json.dumps(payload).encode('utf-8'),
-                    callback=self.delivery_report
+                    callback= on_delivery
                 )
                 self.producer.poll(0)
                 return True
@@ -90,3 +116,17 @@ class VitalsProducer:
 
         if self.delivery_errors:
             raise RuntimeError("Kafka delivery failed: " + "; ".join(self.delivery_errors[:5]))
+    def close(self, timeout = 30.0):
+        """Flush Kafka callbacks rồi đóng collector ở cuối vòng đời producer.
+
+        Args:
+            timeout: Số giây tối đa chờ flush hiện có.
+
+        Notes:
+            Chỉ gọi sau khi replay threads dừng gửi.
+            Có thể flush nhiều lần giữa run; close chỉ dùng lúc kết thúc.
+        """
+        try:
+            self.flush(timeout)
+        finally:
+            self.metrics.close()

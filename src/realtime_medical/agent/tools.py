@@ -32,7 +32,7 @@ class AgentTools:
     ) -> None:
         """Khởi tạo loader và cache TTL theo mã ca mổ."""
         if cache_ttl_seconds <= 0 or max_cache_entries <= 0:
-            raise ValueError("Cấu hình cache phải lớn hơn 0")
+            raise ValueError("Cache configuration values must be greater than 0")
 
         self.context_loader = context_loader
         self.cache_ttl_seconds = cache_ttl_seconds

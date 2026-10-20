@@ -28,25 +28,25 @@ def assess_quality(
 
     if age > policy.max_data_age_seconds:
         quality = "UNUSABLE"
-        limitations.append(f"Dữ liệu đã cũ {age:.1f} giây.")
+        limitations.append(f"Data is stale by {age:.1f} seconds.")
 
     if age < -policy.max_future_skew_seconds:
         quality =  "UNUSABLE"
-        limitations.append("Timestamp dữ liệu đi trước đồng hồ hệ thống.")
+        limitations.append("Data timestamp is ahead of the system clock.")
 
     if event.horizon_seconds != policy.horizon_seconds:
         quality = "UNUSABLE"
-        limitations.append("Khoảng dự đoán không khớp chính sách agent.")
+        limitations.append("Prediction horizon does not match the agent policy.")
 
     if quality == "PARTIAL":
-        limitations.append("Dữ liệu chỉ đáp ứng một phần yêu cầu đánh giá.")
+        limitations.append("Data only partially meets the assessment requirements.")
     elif quality ==  "UNKNOWN":
-        limitations.append("Chưa xác định được chất lượng dữ liệu.")
+        limitations.append("Data quality has not been determined.")
     elif quality == "UNUSABLE" and not limitations:
-        limitations.append("Dữ liệu không đáp ứng điều kiện dự đoán.")
+        limitations.append("Data does not meet the prediction requirements.")
     
     if event.model_score is None:
-        limitations.append("Chưa có điểm dự đoán ML.")
+        limitations.append("ML prediction score is not available.")
     
     return quality, tuple(limitations)
 
@@ -88,11 +88,11 @@ def collect_evidence(event: RiskEvent) -> Tuple[str, ...]:
 
     evidence = []
     labels = {
-        "hr": ("Nhịp tim", "bpm"),
+        "hr": ("Heart rate", "bpm"),
         "spo2": ("SpO2", "%"),
-        "sbp": ("Huyết áp tâm thu", "mmHg"),
-        "mbp": ("Huyết áp trung bình", "mmHg"),
-        "rr": ("Nhịp thở", "lần/phút"),
+        "sbp": ("Systolic blood pressure", "mmHg"),
+        "mbp": ("Mean blood pressure", "mmHg"),
+        "rr": ("Respiratory rate", "breaths/min"),
     }
 
     for field_name, (label, unit) in labels.items():
@@ -100,18 +100,18 @@ def collect_evidence(event: RiskEvent) -> Tuple[str, ...]:
         trend = event.features.get(f"{field_name}_trend")
 
         if isinstance(latest, (int, float)) and isfinite(latest):
-            evidence.append(f"{label} gần nhất: {latest:.1f} {unit}.")
+            evidence.append(f"{label} latest: {latest:.1f} {unit}.")
         
         if isinstance(trend, (int, float)) and isfinite(trend):
             if trend != 0:
                 evidence.append(
-                    f"{label} thay đổi cuối–đầu cửa sổ: "
+                    f"{label} change from window start to end: "
                     f"{trend:+.1f} {unit}."
                 )
     
     span = event.features.get("window_actual_span_seconds")
     if isinstance(span, (int, float)) and isfinite(span):
-        evidence.append(f"Khoảng dữ liệu đã quan sát: {span:.1f} giây.")
+        evidence.append(f"Observed data span: {span:.1f} seconds.")
     
     return tuple(evidence)
 
@@ -128,43 +128,43 @@ def build_explanation(
     chẩn đoán, xác suất lâm sàng hoặc hướng dẫn điều trị.
     """
     current_labels = {
-        "LOW": "chưa có rule vượt ngưỡng cảnh báo",
-        "MEDIUM": "có rule cảnh báo mức MEDIUM",
-        "CRITICAL": "có rule cảnh báo mức CRITICAL", 
+        "LOW": "no rule exceeds an alert threshold",
+        "MEDIUM": "a rule indicates a MEDIUM alert",
+        "CRITICAL": "a rule indicates a CRITICAL alert",
     }
 
     forecast_labels = {
-        "NONE": "điểm ML dưới ngưỡng theo dõi của chính sách",
-        "WATCH": "điểm ML đạt mức theo dõi",
-        "HIGH": "điểm ML đạt mức ưu tiên cao",
-        "UNKNOWN": "chưa đủ điều kiện đánh giá",
+        "NONE": "ML score is below the policy watch threshold",
+        "WATCH": "ML score meets the watch threshold",
+        "HIGH": "ML score meets the high-priority threshold",
+        "UNKNOWN": "insufficient conditions for assessment",
     }
 
     sentences = [
-        f"Ca mổ {event.surgery_id}.",
-        f"Hiện tại: {current_labels[event.current_rule_level]}.",
-        f"Dự đoán trong {event.horizon_seconds} giây tới: "
+        f"Surgery {event.surgery_id}.",
+        f"Current status: {current_labels[event.current_rule_level]}.",
+        f"Forecast for the next {event.horizon_seconds} seconds: "
         f"{forecast_labels[forecast_level]}.",
     ]
 
     department = context.get("department")
     if isinstance(department, str) and department:
-        sentences.append(f"Bộ phận: {department}")
+        sentences.append(f"Department: {department}")
 
     if event.model_score is not None:
         sentences.append(
-            f"Điểm ML: {event.model_score:.3f}; "
-            "chưa diễn giải thành xác suất lâm sàng."
+            f"ML score: {event.model_score:.3f}; "
+            "not interpreted as a clinical probability."
         )
     
     if event.rule_reasons:
-        sentences.append("Lý do từ rules: "+";".join(event.rule_reasons))
+        sentences.append("Rule reasons: "+";".join(event.rule_reasons))
 
     if evidence:
-        sentences.append("Bằng chứng quan sát: "+" ".join(evidence))
+        sentences.append("Observed evidence: "+" ".join(evidence))
 
     if limitations:
-        sentences.append("Giới hạn: "+" ".join(limitations))
+        sentences.append("Limitations: "+" ".join(limitations))
 
     return " ".join(sentences)
 

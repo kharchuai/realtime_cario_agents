@@ -46,25 +46,25 @@ class RiskEvent:
     def __post_init__(self):
         """Kiểm tra định dạng sự kiện trước khi đưa vào hàng đợi."""
         if not self.event_id or self.surgery_id <= 0:
-            raise ValueError("event_id và surgery_id không hợp lệ")
+            raise ValueError("Invalid event_id and surgery_id")
 
         if self.observed_at.utcoffset() is None:
-            raise ValueError("observed_at phải có múi giờ")
+            raise ValueError("observed_at must include a timezone")
 
         if self.current_rule_level not in {"LOW", "MEDIUM", "CRITICAL"}:
-            raise ValueError("current_rule_level không hợp lệ")
+            raise ValueError("Invalid current_rule_level")
 
         if  self.data_quality not in {"GOOD", "PARTIAL", "UNKNOWN", "UNUSABLE"}:
-            raise ValueError("data_quality không hợp lệ")
+            raise ValueError("Invalid data_quality")
         
         if self.horizon_seconds <= 0:
-            raise ValueError("horizon_seconds phải lớn hơn 0")
+            raise ValueError("horizon_seconds must be greater than 0")
 
         if self.model_score is not None:
             if not isfinite(self.model_score):
-                raise ValueError("model_score phải hữu hạn")
+                raise ValueError("model_score must be finite")
             if not 0.0 <= self.model_score <= 1.0:
-                raise ValueError("model_score phải thuộc [0, 1]")
+                raise ValueError("model_score must be in [0, 1]")
 
 @dataclass(frozen = True)
 class AgentPolicy:
@@ -94,9 +94,9 @@ class AgentPolicy:
         )
 
         if not valid_threshold:
-            raise ValueError("Thứ tự các ngưỡng không hợp lệ")
+            raise ValueError("Invalid threshold ordering")
         if self.horizon_seconds <= 0:
-            raise ValueError("horizon_second phải lớn hơn 0")
+            raise ValueError("horizon_seconds must be greater than 0")
 
         positive_limits = (
             self.max_data_age_seconds,
@@ -105,10 +105,10 @@ class AgentPolicy:
             )
 
         if any(value<= 0 for value in positive_limits):
-            raise ValueError("Giới hạn thời gian phải lớn hơn 0")
+            raise ValueError("Time limits must be greater than 0")
 
         if self.max_future_skew_seconds < 0:
-            raise ValueError("max_future_skew_seconds không được âm")
+            raise ValueError("max_future_skew_seconds must be non-negative")
 
 @dataclass(frozen = True)
 class AgentResult:

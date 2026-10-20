@@ -49,8 +49,8 @@ class RiskAgentGraph:
             try: 
                 context = self.tools.get_context(event)
             except Exception:
-                logger.exception("Không lấy được ngữ cảnh surgery_id=%s", event.surgery_id)
-                limitations +=  ("Không lấy được ngữ cảnh bổ sung",)
+                logger.exception("Failed to retrieve context for surgery_id=%s", event.surgery_id)
+                limitations +=  ("Additional context could not be retrieved",)
 
         evidence = collect_evidence(event)
         explaination = build_explanation(event, forecast_level, evidence, limitations, context)

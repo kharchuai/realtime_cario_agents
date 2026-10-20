@@ -26,6 +26,7 @@
 import json
 import logging
 import time
+import os
 
 from datetime import datetime, timezone
 from confluent_kafka import Consumer, KafkaError
@@ -40,6 +41,9 @@ from src.realtime_medical.triage.trigger_model import MLTriageModel
 from src.realtime_medical.agent import AgentPolicy, RiskEvent
 from src.realtime_medical.agent.runtime import AgentRuntime, AgentRuntimeError
 
+from src.realtime_medical.utils.benchmark_hooks import (logical_alert_id, make_metrics, mark_vitals_persisted, mark_alerts_persisted, record_id)
+from src.realtime_medical.utils.signal_monitor import SignalMonitor
+
 logger = logging.getLogger(__name__)
 
 class VitalsConsumer:
@@ -53,7 +57,7 @@ class VitalsConsumer:
         self.consumer = Consumer(conf)
         # This topic name matches the environment variable configuration
         self.topic = config.kafka_topic_vitals
-        self.consumer.subscribe([self.topic])
+        self.consumer.subscribe([self.topic], on_assign=self._on_assign)
         
         # Start DB  Client
         self.db_client= DataBaseClient(config)
@@ -83,6 +87,27 @@ class VitalsConsumer:
                 horizon_seconds = self.ml_model.prediction_horizon_seconds
             ),
         )
+
+        self.config = config
+        self.metrics = make_metrics("consumer")
+        self.signal_monitor = None
+        if self.metrics.enabled:
+            self.signal_monitor = SignalMonitor(self.metrics, config)
+            fields = [
+                f.strip() for f in os.environ.get(
+                    "BENCH_SIGNAL_FIELDS",
+                    os.environ.get("BENCH_SIGNAL_FIELD", "hr,spo2"),
+                ).split(",") if f.strip()
+            ]
+            for value in os.environ.get("BENCH_CASES", "").split(","):
+                if value.strip():
+                    self.signal_monitor.register(int(value.strip()), fields)
+
+    def _on_assign(self, consumer, partitions):
+        """Báo Kafka đã phân partition để runner không phát trước lúc sẵn sàng."""
+        logger.info("KAFKA_ASSIGNED partitions=%s", len(partitions))
+        if self.metrics.enabled:
+            self.metrics.trace("consumer_assigned", "consumer", partitions=len(partitions))
 
     def _should_flush(self) -> bool:
         """Quyết định khi nào ghi dữ liệu đang nằm trong buffer.
@@ -123,9 +148,12 @@ class VitalsConsumer:
 
         try:
             inserted = self.db_client.insert_vitals_batch(rows)
+            if self.metrics.enabled:
+                ack_ns = time.time_ns()
+                mark_vitals_persisted(self.metrics, self.config, rows, ack_ns)
         except (ValueError, DataError, IntegrityError):
             logger.exception(
-                "VITALS_BATCH_DATA_ERROR rows=%s; thử từng dòng",
+                "VITALS_BATCH_DATA_ERROR rows=%s; retrying individual rows",
                 len(rows),
             )
             
@@ -146,13 +174,17 @@ class VitalsConsumer:
         for surgery_id, vitals in rows:
             try:
                 self.db_client.insert_vitals_batch([(surgery_id, vitals)])
+                if self.metrics.enabled:
+                    ack_ns = time.time_ns()
+                    mark_vitals_persisted(self.metrics, self.config, [(surgery_id, vitals)], ack_ns)
+
             
             except Exception:
                 pending.append((surgery_id, vitals))
 
                 logger.exception(
                     "VITAL_ROW_WRITE_FAILED surgery_id=%s "
-                    "recorded_at=%s; giữ để thử lại",
+                    "recorded_at=%s; retaining for retry",
                     surgery_id,
                     vitals.get("recorded_at"),
                 )
@@ -203,12 +235,15 @@ class VitalsConsumer:
             return
         try:
             self.db_client.insert_alerts_batch(ready)
+            if self.metrics.enabled:
+                ack_ns = time.time_ns()
+                mark_alerts_persisted(self.metrics, ready, ack_ns)
         except (ValueError, DataError, IntegrityError):
-            logger.exception(f"ALERTS_BATCH_DATA_ERROR rows = {len(ready)}; thử từng dòng")
+            logger.exception(f"ALERTS_BATCH_DATA_ERROR rows = {len(ready)}; retrying individual rows")
         
         except Exception:
             logger.exception(
-                f"ALERTS_BATCH_WRITE_FAILD rows = {len(ready)}; giữ để thử lại"
+                f"ALERTS_BATCH_WRITE_FAILD rows = {len(ready)}; retaining for retry"
             )
             return
         
@@ -229,12 +264,15 @@ class VitalsConsumer:
                 alert["model_score"],
                 alert["alert_reason"],
                 )
+                if self.metrics.enabled:
+                    ack_ns = time.time_ns()
+                    mark_alerts_persisted(self.metrics, [alert], ack_ns)
             except Exception: 
                 failed.append(alert)
 
                 logger.exception(
-                    f"ALERT_ROWS_WRITE_FAILED surgery_id = {alert["surgery_id"]} "
-                    f"recorded_at = {alert["recorded_at"]}; giữ để thử lại")
+                    f"ALERT_ROWS_WRITE_FAILED surgery_id = {alert['surgery_id']} "
+                    f"recorded_at = {alert['recorded_at']}; retaining for retry")
         self._alerts_buffer = waiting + failed
 
         logger.info(f"ALERTS_FLUSH_PARTIAL saved = {len(ready) - len(failed)} failed = {len(failed)} waiting = {len(waiting)}")
@@ -265,6 +303,9 @@ class VitalsConsumer:
             )
         else:
             self._next_retry_time = 0.0
+        if self.metrics.enabled:
+            self.metrics.gauge("buffer_depth", len(self._vitals_buffer), labels = {"stream":"vitals"})
+            self.metrics.gauge("buffer_depth", len(self._alerts_buffer), labels = {"stream":"alerts"})
     
     def _parse_observed_at(self, value: str) -> datetime:
         """Đọc timestamp có múi giờ và chuẩn hóa sang UTC.
@@ -278,7 +319,7 @@ class VitalsConsumer:
         )
 
         if observed_at.utcoffset() is None:
-            raise ValueError("recorded_at thiếu múi giờ; producer phải gửi timestamp UTC")
+            raise ValueError("recorded_at is missing a timezone; producer must send a UTC timestamp")
         return observed_at.astimezone(timezone.utc)
 
     def _submit_agent_event(self, msg, surgery_id:int, observed_at: datetime, risk_level:  str, rule_reasons, features, ml_score ):
@@ -312,6 +353,8 @@ class VitalsConsumer:
                     f"(batch_size = {self.batch_size}, flush_interval = {self.flush_interval})")
         try:
             self.agent_runtime.start()
+            if self.signal_monitor is not None:
+                self.signal_monitor.start()
             while True:
                 # Poll data each second
                 self.agent_runtime.check_health()
@@ -347,22 +390,38 @@ class VitalsConsumer:
                         continue  
                     
                     logger.info(f"Received data steam from surgery {surgery_id} (patient {patient_id})")
-                    
+
+                    bench =  vitals_data.pop("_bench", None)
+                    rid = None
+                    if self.metrics.enabled:
+                        # Chỉ lọc run trong chế độ benchmark.
+                        if not isinstance(bench, dict) or bench.get("run_id") != self.metrics.run_id:
+                            continue
+
+                        rid = record_id(self.metrics.run_id, surgery_id, vitals_data["recorded_at"])
+                        self.metrics.trace("consumer_received", rid, source_ns = bench["t0_ns"])
+                        self.signal_monitor.update_signal(surgery_id, vitals_data, bench["t0_ns"])
+
                     self._vitals_buffer.append((surgery_id, vitals_data))
 
                     # Rules use each reading; ML uses the configured streaming window.
-                    risk_level, rule_reasons = self.rule_engine.evaluate(vitals_data)
-                    
+                    with  self.metrics.timer("rules_latency_ms"):
+                        risk_level, rule_reasons = self.rule_engine.evaluate(vitals_data)
+                    if self.metrics.enabled:
+                        self.metrics.trace("rule_evaluated", rid, risk_level = risk_level)
+                        if risk_level == "CRITICAL":
+                            self.metrics.trace("critical_detected", rid)
                     observed_at = self._parse_observed_at(vitals_data["recorded_at"])
                     
                     ml_score = None
                     features =None
                     try:
-                        features = self.feature_builder.process_reading(
-                            surgery_id, vitals_data, timestamp=observed_at.timestamp()
-                        )
-                        if features is not None:
-                            ml_score = self.ml_model.predict_risk(features)
+                        with self.metrics.timer("feature_and_ml_latency_ms"):
+                            features = self.feature_builder.process_reading(
+                                surgery_id, vitals_data, timestamp=observed_at.timestamp()
+                            )
+                            if features is not None:
+                                ml_score = self.ml_model.predict_risk(features)
                     except Exception:
                         logger.exception("ML feature extraction or prediction failed for surgery_id=%s", surgery_id)
 
@@ -382,6 +441,12 @@ class VitalsConsumer:
                             "model_score": ml_score,
                             "alert_reason": alert_reason,
                         })
+                        if self.metrics.enabled:
+                            self.metrics.trace(
+                                "alert_generated", rid,
+                                event_id=logical_alert_id(rid),
+                                alert_kind="critical_rule" if risk_level == "CRITICAL" else "ml_only",
+                            )
                     
                     self._submit_agent_event(
                         msg = msg, 
@@ -411,15 +476,23 @@ class VitalsConsumer:
 
                     if self._vitals_buffer or self._alerts_buffer:
                         raise RuntimeError(
-                            "Shutdown chưa lưu hết dữ liệu: "
+                            "Shutdown did not persist all data: "
                             f"vitals={len(self._vitals_buffer)}, "
                             f"alerts={len(self._alerts_buffer)}. "
-                            "Các bản ghi còn trong RAM chưa được lưu bền vững.")
+                            "Records remaining in RAM have not been persisted.")
                 finally:   
                     try:
                         self.consumer.close()
                     finally:
-                        self.db_client.close()
+                        try:
+                            self.db_client.close()
+                        finally:
+                            try:
+                                if self.signal_monitor is not None:
+                                    self.signal_monitor.close()
+                            finally:
+                                self.metrics.close()
+
 
 if __name__ == "__main__":
     # Independent consumer test run

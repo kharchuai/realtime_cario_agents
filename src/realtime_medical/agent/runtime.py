@@ -52,24 +52,24 @@ class AgentRuntime:
     def start(self): 
         """Khởi động worker đúng một lần trước khi nhận sự kiện."""
         if self._started or self._closed:
-            raise AgentRuntimeError("Runtime đã start hoặc đã đóng")
+            raise AgentRuntimeError("Runtime has already started or is closed")
 
         self._thread.start()
         self._started = True
-        logger.info("Agent worker đã khởi động")
+        logger.info("Agent worker started")
 
     def check_health(self):
         """Báo lỗi nếu worker thất bại hoặc dừng ngoài dự kiến."""
         if not self._started or self._closed:
-            raise AgentRuntimeError("Agent runtime không hoạt động")
+            raise AgentRuntimeError("Agent runtime is not active")
 
         if self._error is not None:
             raise AgentRuntimeError(
-                 "Agent worker đã xử lý thất bại"
+                 "Agent worker failed during processing"
             ) from self._error
 
         if not self._thread.is_alive():
-            raise AgentRuntimeError("Agent worker đã dừng ngoài dự kiến")
+            raise AgentRuntimeError("Agent worker stopped unexpectedly")
 
     def submit(self, event: RiskEvent):
         """Đưa sự kiện vào queue và báo lỗi rõ ràng nếu không tiếp nhận."""
@@ -77,7 +77,7 @@ class AgentRuntime:
 
         if not self.worker.submit(event):
             raise AgentRuntimeError(
-                f"Queue đầy; chưa tiếp nhận event_id={event.event_id}"
+                f"Queue is full; event was not accepted event_id={event.event_id}"
             )
 
     def close(self, timeout_seconds: float = 5.0): 
@@ -99,12 +99,12 @@ class AgentRuntime:
         self._thread.join(timeout = timeout_seconds)
 
         if self._thread.is_alive():
-            raise AgentRuntimeError("Worker chưa xử lý hết queue trong thời gian shutdown")
+            raise AgentRuntimeError("Worker did not drain the queue within the shutdown timeout")
 
         if self._error is not None:
-            raise AgentRuntimeError("Worker kết thúc với lỗi") from self._error
+            raise AgentRuntimeError("Worker terminated with an error") from self._error
         
-        logger.info("Agent worker đã dừng và xử lý hết queue")
+        logger.info("Agent worker stopped and drained the queue")
 
     def _run(self) -> None:
         """Chạy worker và lưu ngoại lệ để consumer phát hiện."""
@@ -112,7 +112,7 @@ class AgentRuntime:
             self.worker.run_forever()
         except Exception as error:
             self._error = error
-            logger.exception("Agent worker dừng do lỗi")
+            logger.exception("Agent worker stopped due to an error")
 
     def _publish(self, result: AgentResult):
         """Xuất kết quả có cấu trúc ra console bằng logging."""
@@ -127,4 +127,4 @@ class AgentRuntime:
 
     def _handle_failure(self, event: RiskEvent,  error: Exception):
         """Dừng worker khi một sự kiện thất bại trong bản thử nghiệm."""
-        raise AgentRuntimeError(f"Không xử lý được event_id={event.event_id}") from error
+        raise AgentRuntimeError(f"Failed to process event_id={event.event_id}") from error

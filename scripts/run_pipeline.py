@@ -9,7 +9,9 @@ import json
 import os
 import math
 
-from concurrent.futures  import ThreadPoolExecutor, as_completed
+import heapq 
+
+from concurrent.futures  import ThreadPoolExecutor, FIRST_COMPLETED, wait
 from  dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from  pathlib import Path
@@ -240,15 +242,11 @@ def replay_one_source(
     config: AppConfig,
     producer: VitalsProducer,
     replay_base_time: datetime,
-    start_event: threading.Event,
     max_rows: int,
     delay: float,
     realtime: bool = False,
     runner_metrics = None,
-) -> ReplayResult:
-    if runner_metrics is None:
-        raise ValueError("Benchmark replay requires runner_metrics")
-
+):
     result = ReplayResult(
         surgery_id = sources.surgery_id,
         patient_id = sources.patient_id,
@@ -262,13 +260,14 @@ def replay_one_source(
         sources.csv_path.name,
     )
 
-    start_event.wait()
+    
     probe_mode = (runner_metrics.enabled and os.environ.get("BENCH_CRITICAL_PROBES", "0") == "1")
     probe_period_ns = 1_000_000_000
     # Chung một lịch cho mọi bệnh nhân; 1 tick = 1 vòng probe toàn hệ thống.
     probe_base_wall_ns = int(replay_base_time.timestamp() * 1e9)
     probe_base_mono_ns = time.monotonic_ns() + probe_base_wall_ns - time.time_ns()
     probe_index = 0
+    next_send_mono_ns = time.monotonic_ns()
     nrows = max_rows if max_rows > 0 else None
 
     csv_chunks = pd.read_csv(
@@ -308,40 +307,22 @@ def replay_one_source(
             vitals["time_sec"] = time_sec
             vitals["recorded_at"] = recorded_at.isoformat(timespec = "microseconds")
 
-            if realtime and not probe_mode:
-                remaining = (
-                    recorded_at - datetime.now(timezone.utc)
-                ).total_seconds()
-                if remaining > 0:
-                    time.sleep(remaining)
-            source_ns = time.time_ns()
-            if runner_metrics.enabled and not probe_mode and os.environ.get("BENCH_SCHEDULED_REPLAY") == "1":
-                source_ns = int(recorded_at.timestamp() * 1e9)
-
             if probe_mode:
-                target_mono_ns = (
-                    probe_base_mono_ns
-                    + probe_index * probe_period_ns
-                )
-                wait_ns = target_mono_ns - time.monotonic_ns()
+                due_mono_ns = (probe_base_mono_ns + probe_index *  probe_period_ns)
+            elif realtime:
+                due_mono_ns = (probe_base_mono_ns + int(time_sec * 1_000_000_000))
+            else:
+                due_mono_ns =  next_send_mono_ns
+            yield  due_mono_ns
 
-                if wait_ns > 0:
-                    time.sleep(wait_ns / 1e9)
+            source_ns = time.time_ns()
 
-                # Giữ mốc theo lịch; không che độ trễ nếu nguồn gửi chậm.
-                source_ns = (
-                    probe_base_wall_ns
-                    + probe_index * probe_period_ns
-                )
-
-                vitals["recorded_at"] = datetime.fromtimestamp(
-                    source_ns / 1e9,
-                    tz=timezone.utc,
-                ).isoformat(timespec="microseconds")
-
-                vitals["time_sec"] = (
-                    probe_index * probe_period_ns / 1e9
-                )
+            if (runner_metrics.enabled and not probe_mode and (realtime or os.environ.get("BENCH_SCHEDULED_REPLAY") =="1")):
+                source_ns = int(recorded_at.timestamp() * 1_000_000_000)
+            if probe_mode:
+                source_ns = (probe_base_wall_ns + probe_index * probe_period_ns)
+                vitals["recorded_at"] = datetime.fromtimestamp(source_ns / 1e9, tz=  timezone.utc).isoformat(timespec= "microseconds")
+                vitals["time_sec"] = (probe_index * probe_period_ns / 1e9)
                 probe_index += 1
             critical_reference = False
             alert_reference = False
@@ -399,8 +380,8 @@ def replay_one_source(
             if result.accepted % 1000 == 0 and result.accepted > 0:
                 logger.info("surgery=%s enqueued %d messages",sources.surgery_id,result.accepted)
 
-            if not probe_mode and delay > 0 and not realtime:
-                time.sleep(delay)
+            if not probe_mode and not realtime:
+                next_send_mono_ns = (time.monotonic_ns() + int(delay * 1_000_000_000))
 
     logger.info(
         "Producer completed surgery=%s: "
@@ -413,6 +394,13 @@ def replay_one_source(
     )
 
     return result
+
+def advance_replay(steps):
+     """Chạy đến hạn chờ tiếp theo, hoặc trả kết quả khi hết CSV."""
+     try:
+         return next(steps), None
+     except StopIteration as finished:
+         return None, finished.value
 
 def get_persisted_counts(engine, surgery_ids:list[int], replay_started_at: datetime) -> dict[int, int]:
     query = text(
@@ -516,49 +504,85 @@ def run_replay(args, measured = None) -> int:
 
         replay_started_at = datetime.now(timezone.utc)
 
-        start_event = threading.Event()
-
-        # confluent_kafka.Producer hỗ trợ gọi từ nhiều thread.
-        # Dùng chung một producer giúp tránh mở một kết nối Kafka/file.
         producer = VitalsProducer(config)
+        runner_metrics = make_metrics("runner")
 
         results: list[ReplayResult] = []
         worker_errors: list[str] = []
 
-        runner_metrics = make_metrics("runner")
+        streams = [(
+            source,
+            replay_one_source(
+                sources= source,
+                config =config,
+                producer= producer,
+                replay_base_time= replay_started_at,
+                max_rows= args.max_rows,
+                delay = args.delay,
+                realtime= args.realtime,
+                runner_metrics= runner_metrics,
+            ),
+        ) for source in sources]
+        ready  = []
+        if measured is not None:
+            measured.start_source(replay_started_at)
+
         with ThreadPoolExecutor(
-            max_workers = worker_count,
-            thread_name_prefix = "replay",
+            max_workers= worker_count,
+            thread_name_prefix= "replay"
         ) as executor:
-            futures = {
-                executor.submit(
-                    replay_one_source,
-                    source,
-                    config,
-                    producer,
-                    replay_started_at,
-                    start_event,
-                    args.max_rows,
-                    args.delay,
-                    args.realtime,
-                    runner_metrics=runner_metrics,
-                ): source
-                for source in sources
+            pending = {
+                executor.submit(advance_replay,  steps): (source, steps)
+                for source, steps in streams
             }
-            try:
-                if measured is not None:
-                    measured.start_source(replay_started_at)
-            finally:
-                start_event.set()
+            while pending or ready:
+                while ready and ready[0][0] <= time.monotonic_ns():
+                    _,_, sources, steps = heapq.heappop(ready)
 
-            for future in  as_completed(futures):
-                source = futures[future]
+                    future = executor.submit(advance_replay, steps)
+                    pending[future] = (sources, steps)
 
-                try:
-                    results.append(future.result())
-                except Exception as exc:
-                    logger.exception("Replay fail surgery_id = %s", source.surgery_id,)
-                    worker_errors.append(f"surgery_id = {source.surgery_id}: {exc}")
+                producer.producer.poll(0)
+
+                if not pending:
+                    remaining = (ready[0][0] - time.monotonic_ns()) / 1_000_000_000
+                    time.sleep(min(0.05, max(0.0, remaining)))
+                    continue
+
+                timeout = 0.05
+                if ready:
+                    remaining = (ready[0][0] - time.monotonic_ns()) / 1_000_000_000
+                    timeout = min(timeout, max(0.0, remaining))
+                done, _ =  wait(
+                    pending, 
+                    timeout= timeout,
+                    return_when= FIRST_COMPLETED,
+                )
+
+                for future in done:
+                    source, steps = pending.pop(future)
+
+                    try:
+                        due_mono_ns , result = future.result()
+                    except Exception as exc:
+                        logger.exception(
+                            "Replay failed surgery_id=%s",
+                            source.surgery_id,
+                        )
+                        worker_errors.append(f"surgery_id = {source.surgery_id}: {exc}")
+                        continue
+                    if due_mono_ns is None:
+                        results.append(result)
+                    else:
+                        heapq.heappush(
+                            ready,
+                            (
+                                due_mono_ns,
+                                source.surgery_id,
+                                source,
+                                steps,
+                            ),
+                        )
 
         producer.flush()
         if measured is not None:

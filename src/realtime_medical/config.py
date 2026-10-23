@@ -84,6 +84,7 @@ class StreamingConfig(BaseModel):
     evaluate_every_seconds:  int
     min_samples_to_evaluate: int 
     batch_size: int
+    flush_interval_seconds:int
     sampling_rate_seconds:  int
     aggregate_by: str
     missing_data:  MissingDataConfig

@@ -43,6 +43,7 @@ streaming:
   evaluate_every_seconds: 5
   min_samples_to_evaluate: 5
   batch_size: 100                 # Number of records per batch
+  flush_interval_seconds: 3
   sampling_rate_seconds: 1
   aggregate_by: "time_window"
   missing_data:

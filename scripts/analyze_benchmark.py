@@ -42,6 +42,50 @@ def throughput_validation(expected, first, sink_stage, start_ns, end_ns, observe
         "backlog_at_end": pending_at(end_ns),
         "deadline_results_for_inputs": deadline_report(cohort, sink_stage, observed_end_ns, first),
     }
+
+def summariaze_m2(signals):
+    summary = {}
+
+    for field in sorted({row["field"] for row in signals}):
+        rows = [row for row in signals if row["field"] == field]
+        active = [row for row in rows if row["active_samples"] > 0]
+
+        never_seen = sorted(
+            row["surgery_id"]
+            for row in active 
+            if row["active_never_seen_samples"] == row["active_samples"]
+        )
+
+        ages = [
+            row["max_active_signal_age_s"]
+            for row in active
+            if row["max_active_signal_age_s"] is not None
+        ]
+
+        gaps =[ 
+            row["max_active_receive_gap_s"]
+            for row in active
+            if row["max_active_receive_gap_s"] is not None
+        ]
+
+        summary[field] = {
+            "surgery_monitored": len(rows),
+            "surgery_with_active_samples": len(active),
+            "surgery_over_gap_limit": sum(
+                row["active_receive_gap_over_limit_samples"] > 0 for row in active
+            ),
+            "over_limit_sample": sum(
+                row["active_receive_gap_over_limit_samples"] for row in active
+            ),
+            "never_seen_surgeries": never_seen,
+            "active_clock_anomaly_samples": sum(
+                row["active_clock_anomaly_samples"] for row in active
+            ),
+            "max_signal_age_s": max(ages, default= None),
+            "max_receive_gap_s": max(gaps,default= None),
+        }
+    return summary
+
 def main():
     """Đọc run, tính metrics tách vitals/alerts và in JSON.
 
@@ -91,7 +135,7 @@ def main():
             "Name":"Critical Detection End-to-End",
             "detection": deadline_report(critical, "critical_detected", end_ns, first, deadline_key="critical_deadline_ns"),
             "source_to_detection": distribution(source_latencies_ms(critical, "critical_detected", end_ns, first)),
-            "source_to_alert_persisted": distribution(source_latencies_ms(critical_alerts, "alert_persisted", end_ns, first)),
+            #"source_to_alert_persisted": distribution(source_latencies_ms(critical_alerts, "alert_persisted", end_ns, first)),
             "critical_alert_deadlines": deadline_report(critical_alerts, "alert_persisted", end_ns, first),
         },
         "M7_M8_M9_by_fault": [],
@@ -175,6 +219,9 @@ def main():
             "never_seen_samples":  0, "clock_anomaly_samples": 0,
             "max_signal_age_s": None, "max_receive_gap_s": None,
             "max_duration_without_sample_s": None,
+            "active_samples": 0,
+            "active_never_seen_samples":0,
+            "active_clock_anomaly_samples": 0,
             "receive_gap_over_limit_samples": 0,
             "active_samples": 0, "active_never_seen_samples": 0,
             "max_active_signal_age_s": None, "max_active_receive_gap_s": None,
@@ -182,7 +229,7 @@ def main():
         })
         item["samples"] += 1
         item["never_seen_samples"] += int(d["status"] == "never_seen")
-        item["clock_anomaly_samples"] += int(d["status"] == "clock_anomaly")
+        item["active_clock_anomaly_samples"] += int(d["status"] == "clock_anomaly")
         for source, target in (
             ("signal_age_s", "max_signal_age_s"),
             ("receive_gap_s", "max_receive_gap_s"),
@@ -198,6 +245,7 @@ def main():
         if active_start_ns is not None and active_start_ns <= sample_ns <= active_end_ns:
             item["active_samples"] += 1
             item["active_never_seen_samples"] += int(d["status"] == "never_seen")
+            item["active_clock_anomaly_samples"] += int(d["status"] == "clock_anomaly")
             for source, target in (("signal_age_s", "max_active_signal_age_s"), ("receive_gap_s", "max_active_receive_gap_s")):
                 value = d.get(source)
                 if value is not None and value >= 0:
@@ -205,11 +253,37 @@ def main():
                     item[target] = value if current is None else max(current, value)
             item["active_receive_gap_over_limit_samples"] += int(gap is not None and gap > args.signal_gap_limit_s)
 
+    worst_streams = sorted(
+        (
+            row for row in signals.values()
+            if row["active_samples"] > 0
+            and row["active_receive_gap_over_limit_samples"] > 0
+        ),
+        key = lambda row:row["max_active_receive_gap_s"] or 0,
+        reverse= True,
+    )[:5]
+    active_window_s =  (
+        (active_end_ns - active_start_ns) / 1e9
+        if active_start_ns is not None and active_end_ns is not None
+        else None
+    )
+
     report["M2"] = {
         "Name": "Signal Gap / Signal Age",
         "signal_gap_limit_s": args.signal_gap_limit_s,
-        "active_source_start_ns": active_start_ns, "active_source_end_ns": active_end_ns,
-        "streams": list(signals.values()),
+        "active_window_s": active_window_s,
+        "summary_by_field": summariaze_m2(list(signals.values())),
+        "num_worst_steams": len(worst_streams),
+        "worst_stream":[
+            {
+                "surgery_id": row["surgery_id"],
+                "field": row["field"],
+                "max_receive_gap_s":row["max_active_receive_gap_s"],
+                "max_signal_age_s":  row["max_active_signal_age_s"],
+                "over_limit_samples": row["active_receive_gap_over_limit_samples"],
+            }
+            for row in worst_streams
+        ],
         "note": "A monitor in the same container cannot run while the container is paused or killed.",
     }
 

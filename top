@@ -1,0 +1,297 @@
+[1mdiff --git a/configs/config.yaml b/configs/config.yaml[m
+[1mindex b528358..8e27706 100644[m
+[1m--- a/configs/config.yaml[m
+[1m+++ b/configs/config.yaml[m
+[36m@@ -43,6 +43,7 @@[m [mstreaming:[m
+   evaluate_every_seconds: 5[m
+   min_samples_to_evaluate: 5[m
+   batch_size: 100                 # Number of records per batch[m
+[32m+[m[32m  flush_interval_seconds: 3[m
+   sampling_rate_seconds: 1[m
+   aggregate_by: "time_window"[m
+   missing_data:[m
+[1mdiff --git a/docs/architecture.md b/docs/architecture.md[m
+[1mdeleted file mode 100644[m
+[1mindex e69de29..0000000[m
+[1mdiff --git a/docs/huong_dan_2_kich_ban_50_benh_nhan_20_phut.md b/docs/huong_dan_2_kich_ban_50_benh_nhan_20_phut.md[m
+[1mdeleted file mode 100644[m
+[1mindex 639cb1e..0000000[m
+[1m--- a/docs/huong_dan_2_kich_ban_50_benh_nhan_20_phut.md[m
+[1m+++ /dev/null[m
+[36m@@ -1,34 +0,0 @@[m
+[31m-# Chạy hai kịch bản metrics với 50 case[m
+[31m-[m
+[31m-Chuẩn bị theo [hướng dẫn PowerShell](huong_dan_chay_benchmark_powershell.md). Chọn 50 case đã seed, có CSV và tương ứng 50 bệnh nhân khác nhau; ví dụ dưới đây dùng IDs 1–50, cần kiểm tra dữ liệu thực tế trước khi chạy.[m
+[31m-[m
+[31m-```powershell[m
+[31m-$cases = 1..50[m
+[31m-$env:BENCH_ENABLED = '1'[m
+[31m-```[m
+[31m-[m
+[31m-Baseline dùng probe critical:[m
+[31m-[m
+[31m-```powershell[m
+[31m-python -B scripts/run_pipeline.py --cases $cases --workers 50 --data-dir data/streaming --max-rows 1200 --realtime --critical-probes --observe-seconds 60 --verify-timeout 120[m
+[31m-```[m
+[31m-[m
+[31m-Chờ baseline kết thúc rồi chạy fault trên cùng nguồn:[m
+[31m-[m
+[31m-```powershell[m
+[31m-python -B scripts/run_pipeline.py --cases $cases --workers 50 --data-dir data/streaming --max-rows 1200 --realtime --critical-probes --observe-seconds 60 --verify-timeout 120 --fault consumer_pause --fault-at 300 --fault-duration 20[m
+[31m-```[m
+[31m-[m
+[31m-Consumer tự pause 20 giây tại giây nguồn 300 rồi tiếp tục. Không cần terminal thứ hai.[m
+[31m-[m
+[31m-Lưu ý về 20 phút: source hiện tại giới hạn số hàng CSV bằng `--max-rows` và bỏ hàng trống hoặc timestamp trùng trước khi tạo probe. Vì vậy `1200` chưa bảo đảm 1200 probe/bệnh nhân hay đủ 20 phút. Muốn phát danh nghĩa 20 phút ở nhịp 1 Hz cần dữ liệu cung cấp 1200 hàng hợp lệ có timestamp riêng cho mỗi case; điều chỉnh giới hạn đọc theo CSV thực tế. Mỗi lượt còn thêm thời gian khởi động, observation, kiểm tra DB và phân tích.[m
+[31m-[m
+[31m-Mỗi lượt in `REPORT`, đồng thời ghi đường dẫn vào runner.log:[m
+[31m-[m
+[31m-```text[m
+[31m-logs/<run-id>/report.json[m
+[31m-logs/pipeline/runner.log[m
+[31m-logs/pipeline/consumer.log[m
+[31m-```[m
+[31m-[m
+[31m-Trace và `db_keys.json` vẫn ở `tmp/benchmark/<run-id>/`. Baseline có `M7_M8_M9_by_fault` rỗng. Fault cần có bản ghi fault; đọc trạng thái M8 và backlog còn lại của M9 để biết đã đo đủ recovery hay chưa.[m
+[1mdiff --git a/docs/huong_dan_chay_benchmark_powershell.md b/docs/huong_dan_chay_benchmark_powershell.md[m
+[1mdeleted file mode 100644[m
+[1mindex a21ecc0..0000000[m
+[1m--- a/docs/huong_dan_chay_benchmark_powershell.md[m
+[1m+++ /dev/null[m
+[36m@@ -1,44 +0,0 @@[m
+[31m-# Chạy baseline và fault có metrics (PowerShell)[m
+[31m-[m
+[31m-Chạy tại thư mục gốc dự án, sau khi cài dependencies và cấu hình `.env`. Chuẩn bị hạ tầng và seed dữ liệu nếu chưa có:[m
+[31m-[m
+[31m-```powershell[m
+[31m-docker compose up -d postgres zookeeper kafka kafka-init[m
+[31m-docker compose build consumer[m
+[31m-$env:POSTGRES_HOST = 'localhost'[m
+[31m-$env:POSTGRES_PORT = '5433'[m
+[31m-$env:KAFKA_BROKER_URL = 'localhost:9092'[m
+[31m-python -B -m scripts.seed_data_clinical --patients 50[m
+[31m-$env:BENCH_ENABLED = '1'[m
+[31m-```[m
+[31m-[m
+[31m-Chờ hạ tầng sẵn sàng trước khi seed. Chỉ cần build lại consumer khi source/model/config đổi. Các case phải có trong DB và có CSV tương ứng.[m
+[31m-[m
+[31m-Baseline:[m
+[31m-[m
+[31m-```powershell[m
+[31m-python -B scripts/run_pipeline.py --cases 1 2 3 --workers 3 --data-dir data/streaming --max-rows 1200 --realtime --verify-timeout 120[m
+[31m-```[m
+[31m-[m
+[31m-Fault (chạy sau khi baseline kết thúc):[m
+[31m-[m
+[31m-```powershell[m
+[31m-python -B scripts/run_pipeline.py --cases 1 2 3 --workers 3 --data-dir data/streaming --max-rows 1200 --realtime --verify-timeout 120 --critical-probes --fault consumer_pause --fault-at 300 --fault-duration 20[m
+[31m-```[m
+[31m-[m
+[31m-Fault pause consumer 20 giây tại giây nguồn 300 rồi tự unpause. `--critical-probes` thay giá trị sinh hiệu bằng probe critical theo nhịp 1 giây; để so sánh cùng nguồn, thêm cờ này vào lệnh baseline. Muốn replay giá trị CSV gốc ở cả hai lượt thì bỏ cờ ở fault; M8 cần đủ probe recovery để kết luận.[m
+[31m-[m
+[31m-Runner tự tạo run ID, khởi động consumer, chờ sẵn sàng, phát dữ liệu, dừng consumer và xuất report. Không cần mở consumer riêng hay chạy analyzer sau đó. Nguồn fault phải dài hơn 320 giây và còn đủ dữ liệu phục hồi. `--max-rows` là số hàng CSV, không phải số giây hoặc số mẫu hợp lệ.[m
+[31m-[m
+[31m-Kết quả:[m
+[31m-[m
+[31m-```text[m
+[31m-logs/pipeline/runner.log[m
+[31m-logs/pipeline/consumer.log[m
+[31m-logs/<run-id>/report.json[m
+[31m-tmp/benchmark/<run-id>/  # trace, health và db_keys.json[m
+[31m-```[m
+[31m-[m
+[31m-Log được ghi nối tiếp, kể cả khi bật metrics. Đường dẫn `REPORT` và `RUN_ID` có trong runner.log. Các lượt mới không dùng `test/benchmark_results`; dữ liệu suite cũ nếu có vẫn giữ nguyên.[m
+[31m-[m
+[31m-Baseline không có fault nên `M7_M8_M9_by_fault` rỗng. Ở lượt fault, đọc trạng thái M7/M8/M9 cùng `execution`, `telemetry_issues` và backlog còn lại; có report không đồng nghĩa mọi metric đã đo đủ hoặc đạt yêu cầu.[m
+[1mdiff --git a/scripts/analyze_benchmark.py b/scripts/analyze_benchmark.py[m
+[1mindex 1947e4c..302373a 100644[m
+[1m--- a/scripts/analyze_benchmark.py[m
+[1m+++ b/scripts/analyze_benchmark.py[m
+[36m@@ -42,6 +42,50 @@[m [mdef throughput_validation(expected, first, sink_stage, start_ns, end_ns, observe[m
+         "backlog_at_end": pending_at(end_ns),[m
+         "deadline_results_for_inputs": deadline_report(cohort, sink_stage, observed_end_ns, first),[m
+     }[m
+[32m+[m
+[32m+[m[32mdef summariaze_m2(signals):[m
+[32m+[m[32m    summary = {}[m
+[32m+[m
+[32m+[m[32m    for field in sorted({row["field"] for row in signals}):[m
+[32m+[m[32m        rows = [row for row in signals if row["field"] == field][m
+[32m+[m[32m        active = [row for row in rows if row["active_samples"] > 0][m
+[32m+[m
+[32m+[m[32m        never_seen = sorted([m
+[32m+[m[32m            row["surgery_id"][m
+[32m+[m[32m            for row in active[m[41m [m
+[32m+[m[32m            if row["active_never_seen_samples"] == row["active_samples"][m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        ages = [[m
+[32m+[m[32m            row["max_active_signal_age_s"][m
+[32m+[m[32m            for row in active[m
+[32m+[m[32m            if row["max_active_signal_age_s"] is not None[m
+[32m+[m[32m        ][m
+[32m+[m
+[32m+[m[32m        gaps =[[m[41m [m
+[32m+[m[32m            row["max_active_receive_gap_s"][m
+[32m+[m[32m            for row in active[m
+[32m+[m[32m            if row["max_active_receive_gap_s"] is not None[m
+[32m+[m[32m        ][m
+[32m+[m
+[32m+[m[32m        summary[field] = {[m
+[32m+[m[32m            "surgery_monitored": len(rows),[m
+[32m+[m[32m            "surgery_with_active_samples": len(active),[m
+[32m+[m[32m            "surgery_over_gap_limit": sum([m
+[32m+[m[32m                row["active_receive_gap_over_limit_samples"] > 0 for row in active[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            "over_limit_sample": sum([m
+[32m+[m[32m                row["active_receive_gap_over_limit_samples"] for row in active[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            "never_seen_surgeries": never_seen,[m
+[32m+[m[32m            "active_clock_anomaly_samples": sum([m
+[32m+[m[32m                row["active_clock_anomaly_samples"] for row in active[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            "max_signal_age_s": max(ages, default= None),[m
+[32m+[m[32m            "max_receive_gap_s": max(gaps,default= None),[m
+[32m+[m[32m        }[m
+[32m+[m[32m    return summary[m
+[32m+[m
+ def main():[m
+     """Đọc run, tính metrics tách vitals/alerts và in JSON.[m
+ [m
+[36m@@ -91,7 +135,7 @@[m [mdef main():[m
+             "Name":"Critical Detection End-to-End",[m
+             "detection": deadline_report(critical, "critical_detected", end_ns, first, deadline_key="critical_deadline_ns"),[m
+             "source_to_detection": distribution(source_latencies_ms(critical, "critical_detected", end_ns, first)),[m
+[31m-            "source_to_alert_persisted": distribution(source_latencies_ms(critical_alerts, "alert_persisted", end_ns, first)),[m
+[32m+[m[32m            #"source_to_alert_persisted": distribution(source_latencies_ms(critical_alerts, "alert_persisted", end_ns, first)),[m
+             "critical_alert_deadlines": deadline_report(critical_alerts, "alert_persisted", end_ns, first),[m
+         },[m
+         "M7_M8_M9_by_fault": [],[m
+[36m@@ -175,6 +219,9 @@[m [mdef main():[m
+             "never_seen_samples":  0, "clock_anomaly_samples": 0,[m
+             "max_signal_age_s": None, "max_receive_gap_s": None,[m
+             "max_duration_without_sample_s": None,[m
+[32m+[m[32m            "active_samples": 0,[m
+[32m+[m[32m            "active_never_seen_samples":0,[m
+[32m+[m[32m            "active_clock_anomaly_samples": 0,[m
+             "receive_gap_over_limit_samples": 0,[m
+             "active_samples": 0, "active_never_seen_samples": 0,[m
+             "max_active_signal_age_s": None, "max_active_receive_gap_s": None,[m
+[36m@@ -182,7 +229,7 @@[m [mdef main():[m
+         })[m
+         item["samples"] += 1[m
+         item["never_seen_samples"] += int(d["status"] == "never_seen")[m
+[31m-        item["clock_anomaly_samples"] += int(d["status"] == "clock_anomaly")[m
+[32m+[m[32m        item["active_clock_anomaly_samples"] += int(d["status"] == "clock_anomaly")[m
+         for source, target in ([m
+             ("signal_age_s", "max_signal_age_s"),[m
+             ("receive_gap_s", "max_receive_gap_s"),[m
+[36m@@ -198,6 +245,7 @@[m [mdef main():[m
+         if active_start_ns is not None and active_start_ns <= sample_ns <= active_end_ns:[m
+             item["active_samples"] += 1[m
+             item["active_never_seen_samples"] += int(d["status"] == "never_seen")[m
+[32m+[m[32m            item["active_clock_anomaly_samples"] += int(d["status"] == "clock_anomaly")[m
+             for source, target in (("signal_age_s", "max_active_signal_age_s"), ("receive_gap_s", "max_active_receive_gap_s")):[m
+                 value = d.get(source)[m
+                 if value is not None and value >= 0:[m
+[36m@@ -205,11 +253,37 @@[m [mdef main():[m
+                     item[target] = value if current is None else max(current, value)[m
+             item["active_receive_gap_over_limit_samples"] += int(gap is not None and gap > args.signal_gap_limit_s)[m
+ [m
+[32m+[m[32m    worst_streams = sorted([m
+[32m+[m[32m        ([m
+[32m+[m[32m            row for row in signals.values()[m
+[32m+[m[32m            if row["active_samples"] > 0[m
+[32m+[m[32m            and row["active_receive_gap_over_limit_samples"] > 0[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        key = lambda row:row["max_active_receive_gap_s"] or 0,[m
+[32m+[m[32m        reverse= True,[m
+[32m+[m[32m    )[:5][m
+[32m+[m[32m    active_window_s =  ([m
+[32m+[m[32m        (active_end_ns - active_start_ns) / 1e9[m
+[32m+[m[32m        if active_start_ns is not None and active_end_ns is not None[m
+[32m+[m[32m        else None[m
+[32m+[m[32m    )[m
+[32m+[m
+     report["M2"] = {[m
+         "Name": "Signal Gap / Signal Age",[m
+         "signal_gap_limit_s": args.signal_gap_limit_s,[m
+[31m-        "active_source_start_ns": active_start_ns, "active_source_end_ns": active_end_ns,[m
+[31m-        "streams": list(signals.values()),[m
+[32m+[m[32m        "active_window_s": active_window_s,[m
+[32m+[m[32m        "summary_by_field": summariaze_m2(list(signals.values())),[m
+[32m+[m[32m        "num_worst_steams": len(worst_streams),[m
+[32m+[m[32m        "worst_stream":[[m
+[32m+[m[32m            {[m
+[32m+[m[32m                "surgery_id": row["surgery_id"],[m
+[32m+[m[32m                "field": row["field"],[m
+[32m+[m[32m                "max_receive_gap_s":row["max_active_receive_gap_s"],[m
+[32m+[m[32m                "max_signal_age_s":  row["max_active_signal_age_s"],[m
+[32m+[m[32m                "over_limit_samples": row["active_receive_gap_over_limit_samples"],[m
+[32m+[m[32m            }[m
+[32m+[m[32m            for row in worst_streams[m
+[32m+[m[32m        ],[m
+         "note": "A monitor in the same container cannot run while the container is paused or killed.",[m
+     }[m
+ [m
+[1mdiff --git a/scripts/run_pipeline.py b/scripts/run_pipeline.py[m
+[1mindex a4160ea..50c6cc2 100644[m
+[1m--- a/scripts/run_pipeline.py[m
+[1m+++ b/scripts/run_pipeline.py[m
+[36m@@ -9,7 +9,9 @@[m [mimport json[m
+ import os[m
+ import math[m
+ [m
+[31m-from concurrent.futures  import ThreadPoolExecutor, as_completed[m
+[32m+[m[32mimport heapq[m[41m [m
+[32m+[m
+[32m+[m[32mfrom concurrent.futures  import ThreadPoolExecutor, FIRST_COMPLETED, wait[m
+ from  dataclasses import dataclass, field[m
+ from datetime import datetime, timedelta, timezone[m
+ from  pathlib import Path[m
+[36m@@ -240,15 +242,11 @@[m [mdef replay_one_source([m
+     config: AppConfig,[m
+     producer: VitalsProducer,[m
+     replay_base_time: datetime,[m
+[31m-    start_event: threading.Event,[m
+     max_rows: int,[m
+     delay: float,[m
+     realtime: bool = False,[m
+     runner_metrics = None,[m
+[31m-) -> ReplayResult:[m
+[31m-    if runner_metrics is None:[m
+[31m-        raise ValueError("Benchmark replay requires runner_metrics")[m
+[31m-[m
+[32m+[m[32m):[m
+     result = ReplayResult([m
+         surgery_id = sources.surgery_id,[m
+         patient_id = sources.patient_id,[m
+[36m@@ -262,13 +260,14 @@[m [mdef replay_one_source([m
+         sources.csv_path.name,[m
+     )[m
+ [m
+[31m-    start_event.wait()[m
+[32m+[m[41m    [m
+     probe_mode = (runner_metrics.enabled and os.environ.get("BENCH_CRITICAL_PROBES", "0") == "1")[m
+     probe_period_ns = 1_000_000_000[m
+     # Chung một lịch cho mọi bệnh nhân; 1 tick = 1 vòng probe toàn hệ thống.[m
+     probe_base_wall_ns = int(replay_base_time.timestamp() * 1e9)[m
+     probe_base_mono_ns = time.monotonic_ns() + probe_base_wall_ns - time.time_ns()[m
+     probe_index = 0[m
+[32m+[m[32m    next_send_mono_ns = time.monotonic_ns()[m
+     nrows = max_rows if max_rows > 0 else None[m
+ [m
+     csv_chunks = pd.read_csv([m
+[36m@@ -308,40 +307,22 @@[m [mdef replay_one_source([m
+             vitals["time_sec"] = time_sec[m
+             vitals["recorded_at"] = recorded_at.isoformat(timespec = "microseconds")[m
+ [m
+[31m-            if realtime and not probe_mode:[m
+[31m-                remaining = ([m
+[31m-                    recorded_at - datetime.now(timezone.utc)[m
+[31m-                ).total_seconds()[m
+[31m-                if remaining > 0:[m
+[31m-                    time.sleep(remaining)[m
+[31m-            source_ns = time.time_ns()[m
+[31m-            if runner_metrics.enabled and not probe_mode and os.environ.get("BENCH_SCHEDULED_REPLAY") == "1":[m
+[31m-              

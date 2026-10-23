@@ -68,7 +68,7 @@ class VitalsConsumer:
         )
         
         self.batch_size = config.streaming.batch_size
-        self.flush_interval = config.streaming.window_size_seconds
+        self.flush_interval = config.streaming.flush_interval_seconds
         self.retry_interval = 5.0
 
         self._vitals_buffer =  []
